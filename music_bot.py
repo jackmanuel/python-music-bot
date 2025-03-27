@@ -30,19 +30,19 @@ logger = logging.getLogger('discord')
 # --- yt-dlp Options ---
 # Optimized for streaming, low resource usage
 YDL_OPTIONS = {
-    'format': 'bestaudio/best',
+    'format': 'bestaudio[ext=opus]/bestaudio[acodec=opus]/bestaudio/best',
     'extractaudio': True,
-    'audioformat': 'opus', # Opus is efficient for Discord
+    'audioformat': 'opus',
     'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
     'restrictfilenames': True,
-    'noplaylist': True, # Process only single videos by default
+    'noplaylist': True,
     'nocheckcertificate': True,
     'ignoreerrors': False,
     'logtostderr': False,
     'quiet': True,
     'no_warnings': True,
-    'default_search': 'ytsearch', # Use "ytsearch" for queries
-    'source_address': '0.0.0.0', # Might help with binding issues on some systems
+    'default_search': 'ytsearch',
+    'source_address': '0.0.0.0',
 }
 
 # --- FFmpeg Options ---
@@ -334,6 +334,59 @@ class MusicCog(commands.Cog):
 
         await ctx.send(embed=embed)
 
+    @commands.command(name='remove', help='Removes a song from the queue by its number (use !queue to see numbers).')
+    async def remove(self, ctx: commands.Context, position: int):
+        """Removes a song from the queue specified by its 1-based position."""
+        guild_id = ctx.guild.id
+        self.last_activity[guild_id] = time.time() # Update activity
+
+        queue = self.get_queue(guild_id)
+
+        if not queue:
+            await ctx.send("The queue is currently empty.")
+            return
+
+        # Adjust position to be 0-based index for the deque
+        index_to_remove = position - 1
+
+        if 0 <= index_to_remove < len(queue):
+            try:
+                # Get the info of the song being removed for the confirmation message
+                removed_song_info = queue[index_to_remove] # Access item by index
+
+                # Remove the item from the deque
+                del queue[index_to_remove] # Deques support deletion by index
+
+                logger.info(f"Removed song at position {position} in guild {guild_id}: {removed_song_info['title']}")
+                await ctx.send(f"Removed song #{position}: **{removed_song_info['title']}**")
+
+            except IndexError:
+                 # This might happen in a rare race condition if the queue changes
+                 # between the length check and the access/delete.
+                 await ctx.send("An error occurred trying to remove that song. The queue might have changed.")
+                 logger.warning(f"IndexError during remove command for position {position} in guild {guild_id}.")
+            except Exception as e:
+                 await ctx.send("An unexpected error occurred while trying to remove the song.")
+                 logger.exception(f"Unexpected error in remove command for guild {guild_id}: {e}")
+        else:
+            await ctx.send(f"Invalid song number. Please provide a number between 1 and {len(queue)}.")
+
+    # --- Error Handling for Remove Command (specifically for type errors) ---
+    # Add this error handler within the MusicCog class if you want more specific messages
+    # than the generic cog_command_error might provide for this command.
+    @remove.error
+    async def remove_error(self, ctx: commands.Context, error: commands.CommandError):
+        """Handles errors specifically for the !remove command."""
+        if isinstance(error, commands.MissingRequiredArgument):
+            await ctx.send("You need to specify the number of the song to remove. Use `!queue` to see the numbers.")
+        elif isinstance(error, commands.BadArgument):
+            await ctx.send("Invalid input. Please provide a valid number for the song position.")
+        else:
+            # For other errors, fall back to the generic cog error handler or just log it
+            logger.error(f"An unexpected error occurred in the remove command: {error}")
+            # You could optionally send a generic error message to the user here too.
+            # await ctx.send("An unexpected error occurred.")
+
     @commands.command(name='clear', help='Clears the song queue.')
     async def clear(self, ctx: commands.Context):
         """Clears all songs from the queue."""
@@ -349,6 +402,48 @@ class MusicCog(commands.Cog):
         await ctx.send("Song queue cleared!")
         logger.info(f"Queue cleared for guild {guild_id} by command.")
 
+        @commands.Cog.listener()
+        async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState,
+                                        after: discord.VoiceState):
+            """Checks if the bot should disconnect when a voice channel becomes empty."""
+            # Ignore if the event was triggered by the bot itself
+            if member.id == self.bot.user.id:
+                return
+
+            guild_id = member.guild.id
+
+            # Check if the bot is connected to a voice channel in this guild
+            vc = self.voice_clients.get(guild_id)
+            if not vc or not vc.is_connected():
+                return
+
+            # Check if the event happened in the bot's current channel
+            # We only care if someone *left* the bot's channel (before.channel was the bot's channel)
+            if before.channel == vc.channel:
+                # Now check who is left in the channel
+                # Use vc.channel again to get the potentially updated member list
+                # Filter out the bot itself to see if any humans remain
+                human_members = [m for m in vc.channel.members if not m.bot]
+
+                if not human_members:
+                    # No human members left, only the bot (or it's truly empty)
+                    logger.info(f"Voice channel {vc.channel.name} in guild {guild_id} is empty. Disconnecting.")
+                    # Stop playback if any is happening (optional, disconnect might handle this)
+                    if vc.is_playing() or vc.is_paused():
+                        vc.stop()
+
+                    # Disconnect and clean up state
+                    await vc.disconnect()
+                    # Use .pop(guild_id, None) to safely remove entries if they exist
+                    self.voice_clients.pop(guild_id, None)
+                    self.queues.pop(guild_id, None)
+                    self.current_song.pop(guild_id, None)
+                    self.last_activity.pop(guild_id, None)
+                    # Optionally send a message to the text channel where the last command was used
+                    # (Requires storing the last context, adds complexity)
+                    # last_ctx = self.last_contexts.pop(guild_id, None)
+                    # if last_ctx:
+                    #    await last_ctx.send("Disconnected because the voice channel became empty.")
 
     # --- Inactivity Check Task ---
     @tasks.loop(minutes=1.0) # Check every minute
