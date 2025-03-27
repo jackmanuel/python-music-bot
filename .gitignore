@@ -1,0 +1,16 @@
+# PyCharm specific
+.idea/
+
+# Python virtual environment
+venv/
+*.pyc
+__pycache__/
+
+# Secrets file - DO NOT COMMIT!
+.env
+
+# Optional: Logs, downloaded files, etc.
+*.log
+*.opus
+*.webm
+# etc.
