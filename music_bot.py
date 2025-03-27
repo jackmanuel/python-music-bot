@@ -402,48 +402,48 @@ class MusicCog(commands.Cog):
         await ctx.send("Song queue cleared!")
         logger.info(f"Queue cleared for guild {guild_id} by command.")
 
-        @commands.Cog.listener()
-        async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState,
-                                        after: discord.VoiceState):
-            """Checks if the bot should disconnect when a voice channel becomes empty."""
-            # Ignore if the event was triggered by the bot itself
-            if member.id == self.bot.user.id:
-                return
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState,
+                                    after: discord.VoiceState):
+        """Checks if the bot should disconnect when a voice channel becomes empty."""
+        # Ignore if the event was triggered by the bot itself
+        if member.id == self.bot.user.id:
+            return
 
-            guild_id = member.guild.id
+        guild_id = member.guild.id
 
-            # Check if the bot is connected to a voice channel in this guild
-            vc = self.voice_clients.get(guild_id)
-            if not vc or not vc.is_connected():
-                return
+        # Check if the bot is connected to a voice channel in this guild
+        vc = self.voice_clients.get(guild_id)
+        if not vc or not vc.is_connected():
+            return
 
-            # Check if the event happened in the bot's current channel
-            # We only care if someone *left* the bot's channel (before.channel was the bot's channel)
-            if before.channel == vc.channel:
-                # Now check who is left in the channel
-                # Use vc.channel again to get the potentially updated member list
-                # Filter out the bot itself to see if any humans remain
-                human_members = [m for m in vc.channel.members if not m.bot]
+        # Check if the event happened in the bot's current channel
+        # We only care if someone *left* the bot's channel (before.channel was the bot's channel)
+        if before.channel == vc.channel:
+            # Now check who is left in the channel
+            # Use vc.channel again to get the potentially updated member list
+            # Filter out the bot itself to see if any humans remain
+            human_members = [m for m in vc.channel.members if not m.bot]
 
-                if not human_members:
-                    # No human members left, only the bot (or it's truly empty)
-                    logger.info(f"Voice channel {vc.channel.name} in guild {guild_id} is empty. Disconnecting.")
-                    # Stop playback if any is happening (optional, disconnect might handle this)
-                    if vc.is_playing() or vc.is_paused():
-                        vc.stop()
+            if not human_members:
+                # No human members left, only the bot (or it's truly empty)
+                logger.info(f"Voice channel {vc.channel.name} in guild {guild_id} is empty. Disconnecting.")
+                # Stop playback if any is happening (optional, disconnect might handle this)
+                if vc.is_playing() or vc.is_paused():
+                    vc.stop()
 
-                    # Disconnect and clean up state
-                    await vc.disconnect()
-                    # Use .pop(guild_id, None) to safely remove entries if they exist
-                    self.voice_clients.pop(guild_id, None)
-                    self.queues.pop(guild_id, None)
-                    self.current_song.pop(guild_id, None)
-                    self.last_activity.pop(guild_id, None)
-                    # Optionally send a message to the text channel where the last command was used
-                    # (Requires storing the last context, adds complexity)
-                    # last_ctx = self.last_contexts.pop(guild_id, None)
-                    # if last_ctx:
-                    #    await last_ctx.send("Disconnected because the voice channel became empty.")
+                # Disconnect and clean up state
+                await vc.disconnect()
+                # Use .pop(guild_id, None) to safely remove entries if they exist
+                self.voice_clients.pop(guild_id, None)
+                self.queues.pop(guild_id, None)
+                self.current_song.pop(guild_id, None)
+                self.last_activity.pop(guild_id, None)
+                # Optionally send a message to the text channel where the last command was used
+                # (Requires storing the last context, adds complexity)
+                # last_ctx = self.last_contexts.pop(guild_id, None)
+                # if last_ctx:
+                #    await last_ctx.send("Disconnected because the voice channel became empty.")
 
     # --- Inactivity Check Task ---
     @tasks.loop(minutes=1.0) # Check every minute
