@@ -7,6 +7,7 @@ import time
 from collections import deque
 import os # For token loading
 from dotenv import load_dotenv
+import math # For clamping elapsed time
 
 # --- Load environment variables from .env file ---
 load_dotenv() # <--- CALL THIS EARLY
@@ -80,6 +81,23 @@ class MusicCog(commands.Cog):
             self.queues[guild_id] = deque()
         return self.queues[guild_id]
 
+    def _format_duration(self, seconds: float) -> str:
+        """Formats seconds into MM:SS or HH:MM:SS."""
+        if seconds is None or not isinstance(seconds, (int, float)):
+            return "??:??"
+        try:
+            seconds = int(seconds)
+            minutes, seconds = divmod(seconds, 60)
+            hours, minutes = divmod(minutes, 60)
+            if hours > 0:
+                return f"{hours:d}:{minutes:02d}:{seconds:02d}"
+            else:
+                return f"{minutes:02d}:{seconds:02d}"
+        except Exception:
+             logger.warning(f"Could not format duration for seconds: {seconds}")
+             return "??:??"
+
+
     async def _extract_info(self, query):
         """Extracts info using yt-dlp in an executor to avoid blocking."""
         loop = asyncio.get_event_loop()
@@ -103,8 +121,9 @@ class MusicCog(commands.Cog):
                 'title': data.get('title', 'Unknown Title'),
                 'url': data['url'], # The crucial stream URL
                 'thumbnail': data.get('thumbnail'),
-                'duration': data.get('duration'),
+                'duration': data.get('duration'), # In seconds
                 'webpage_url': data.get('webpage_url', query), # Link back to YT page
+                'start_time': None # Will be set when playback actually starts
             }
             return song_info
 
@@ -132,6 +151,8 @@ class MusicCog(commands.Cog):
 
         # Get next song info from the queue
         next_song_info = queue.popleft()
+        # Set start time *just before* playback
+        next_song_info['start_time'] = time.time()
         self.current_song[guild_id] = next_song_info
         logger.info(f"Playing next song in guild {guild_id}: {next_song_info['title']}")
 
@@ -150,9 +171,11 @@ class MusicCog(commands.Cog):
         except discord.ClientException as e:
              logger.error(f"Discord ClientException while trying to play next in {guild_id}: {e}")
              # Try playing the next one in the queue if available
+             self.current_song.pop(guild_id, None) # Clear failed song
              self._play_next(guild_id) # Recursive call to try next song
         except Exception as e:
             logger.exception(f"Unexpected error during playback setup in {guild_id}: {e}")
+            self.current_song.pop(guild_id, None) # Clear failed song
             self._play_next(guild_id) # Try next song on unexpected error
 
 
@@ -244,7 +267,9 @@ class MusicCog(commands.Cog):
             return
 
         # 4. Add to queue or play immediately
-        if vc.is_playing() or vc.is_paused() or guild_id in self.current_song:
+        # Check if currently playing, paused, OR if current_song is set (might be transitioning)
+        is_active = vc.is_playing() or vc.is_paused() or (guild_id in self.current_song and self.current_song[guild_id] is not None)
+        if is_active:
              queue.append(song_info)
              embed = discord.Embed(title="Added to Queue", description=f"[{song_info['title']}]({song_info['webpage_url']})", color=discord.Color.blue())
              if song_info.get('thumbnail'):
@@ -252,6 +277,8 @@ class MusicCog(commands.Cog):
              embed.add_field(name="Position in queue", value=len(queue))
              await ctx.send(embed=embed)
         else:
+            # Set start time *just before* playback
+            song_info['start_time'] = time.time()
             self.current_song[guild_id] = song_info
             logger.info(f"Playing immediately in guild {guild_id}: {song_info['title']}")
             try:
@@ -262,7 +289,7 @@ class MusicCog(commands.Cog):
                 if song_info.get('thumbnail'):
                     embed.set_thumbnail(url=song_info['thumbnail'])
                 if song_info.get('duration'):
-                    embed.add_field(name="Duration", value=time.strftime('%H:%M:%S', time.gmtime(song_info['duration'])))
+                    embed.add_field(name="Duration", value=self._format_duration(song_info['duration']))
                 await ctx.send(embed=embed)
 
             except discord.ClientException as e:
@@ -285,18 +312,21 @@ class MusicCog(commands.Cog):
             return
 
         vc = self.voice_clients[guild_id]
+        # Check actual playback state first
         if not vc.is_playing() and not vc.is_paused():
             await ctx.send("I am not playing anything right now.")
             return
 
-        if guild_id not in self.current_song:
-             await ctx.send("There's no song currently marked as playing.")
+        # Then check our internal state as a fallback/confirmation
+        current = self.current_song.get(guild_id)
+        if not current:
+             await ctx.send("There's no song currently marked as playing, but attempting to stop.")
              # Try stopping anyway, might be in a weird state
-             vc.stop()
+             vc.stop() # Will trigger _play_next if successful
              return
 
-        logger.info(f"Skipping song in guild {guild_id} by command.")
-        await ctx.send(f"Skipping: {self.current_song[guild_id]['title']}")
+        logger.info(f"Skipping song in guild {guild_id} by command: {current['title']}")
+        await ctx.send(f"Skipping: {current['title']}")
         vc.stop()  # This will trigger the _play_next callback
 
     @commands.command(name='queue', aliases=['q'], help='Shows the current song queue.')
@@ -315,7 +345,8 @@ class MusicCog(commands.Cog):
         embed = discord.Embed(title="Music Queue", color=discord.Color.purple())
 
         if current:
-             embed.add_field(name="Now Playing", value=f"[{current['title']}]({current['webpage_url']})", inline=False)
+             duration_str = self._format_duration(current.get('duration'))
+             embed.add_field(name="Now Playing", value=f"[{current['title']}]({current['webpage_url']}) `[{duration_str}]`", inline=False)
         else:
              embed.add_field(name="Now Playing", value="Nothing currently playing.", inline=False)
 
@@ -324,7 +355,8 @@ class MusicCog(commands.Cog):
             queue_list = ""
             # Limit display to avoid huge messages
             for i, song in enumerate(list(queue)[:10]): # Show first 10 songs
-                queue_list += f"{i + 1}. [{song['title']}]({song['webpage_url']})\n"
+                duration_str = self._format_duration(song.get('duration'))
+                queue_list += f"{i + 1}. [{song['title']}]({song['webpage_url']}) `[{duration_str}]`\n"
             if len(queue) > 10:
                  queue_list += f"\n... and {len(queue) - 10} more."
 
@@ -333,6 +365,78 @@ class MusicCog(commands.Cog):
              embed.add_field(name="Up Next", value="Queue is empty.", inline=False)
 
         await ctx.send(embed=embed)
+
+    # --- NEW COMMAND: NOW PLAYING ---
+    @commands.command(name='nowplaying', aliases=['np'], help='Shows the currently playing song and its progress.')
+    async def nowplaying(self, ctx: commands.Context):
+        """Displays the current song and playback progress."""
+        guild_id = ctx.guild.id
+        self.last_activity[guild_id] = time.time() # Update activity
+
+        vc = self.voice_clients.get(guild_id)
+        current = self.current_song.get(guild_id)
+
+        # Check if connected and if something is marked as current
+        if not vc or not vc.is_connected() or not current:
+            await ctx.send("I am not playing anything right now.")
+            return
+
+        # Check if actually playing or paused (more accurate state)
+        if not vc.is_playing() and not vc.is_paused():
+             await ctx.send("I am not playing anything right now (playback state inactive).")
+             # Clear potentially stale current song info if state mismatch
+             if guild_id in self.current_song:
+                 logger.warning(f"Clearing stale current_song entry for guild {guild_id} due to inactive playback state.")
+                 self.current_song.pop(guild_id, None)
+             return
+
+        start_time = current.get('start_time')
+        total_duration = current.get('duration')
+        title = current.get('title', 'Unknown Title')
+        webpage_url = current.get('webpage_url', '')
+        thumbnail = current.get('thumbnail')
+
+        progress_str = ""
+        if start_time and total_duration:
+            # Note: This calculation might be slightly inaccurate if the bot was paused.
+            # Implementing perfect pause handling requires more state tracking.
+            elapsed_seconds = time.time() - start_time
+            # Clamp elapsed time to not exceed total duration
+            elapsed_seconds = max(0, min(elapsed_seconds, total_duration))
+
+            formatted_elapsed = self._format_duration(elapsed_seconds)
+            formatted_total = self._format_duration(total_duration)
+            progress_str = f"{formatted_elapsed} / {formatted_total}"
+
+             # Simple progress bar (optional)
+            bar_length = 20 # characters
+            progress_ratio = elapsed_seconds / total_duration if total_duration > 0 else 0
+            filled_length = int(bar_length * progress_ratio)
+            bar = '▬' * filled_length + '─' * (bar_length - filled_length)
+            progress_str += f"\n`[{bar}]`"
+
+        elif total_duration:
+            formatted_total = self._format_duration(total_duration)
+            progress_str = f"??:?? / {formatted_total}"
+        else:
+            progress_str = "Progress unavailable"
+
+        state = "Playing"
+        if vc.is_paused():
+            state = "Paused" # Add paused state info
+
+        embed = discord.Embed(title=f"{state}: {title}", description=f"[{title}]({webpage_url})", color=discord.Color.green() if state == "Playing" else discord.Color.orange())
+        if thumbnail:
+            embed.set_thumbnail(url=thumbnail)
+
+        embed.add_field(name="Progress", value=progress_str, inline=False)
+
+        await ctx.send(embed=embed)
+        # Log potential inaccuracy if paused
+        if vc.is_paused():
+            logger.debug(f"NP command used while paused in guild {guild_id}. Displayed time may not reflect exact pause point.")
+
+    # --- END OF NEW COMMAND ---
 
     @commands.command(name='remove', help='Removes a song from the queue by its number (use !queue to see numbers).')
     async def remove(self, ctx: commands.Context, position: int):
@@ -351,18 +455,15 @@ class MusicCog(commands.Cog):
 
         if 0 <= index_to_remove < len(queue):
             try:
-                # Get the info of the song being removed for the confirmation message
+                # Convert deque to list temporarily for indexed removal if needed,
+                # though deques support `del queue[index]`
                 removed_song_info = queue[index_to_remove] # Access item by index
-
-                # Remove the item from the deque
                 del queue[index_to_remove] # Deques support deletion by index
 
                 logger.info(f"Removed song at position {position} in guild {guild_id}: {removed_song_info['title']}")
                 await ctx.send(f"Removed song #{position}: **{removed_song_info['title']}**")
 
             except IndexError:
-                 # This might happen in a rare race condition if the queue changes
-                 # between the length check and the access/delete.
                  await ctx.send("An error occurred trying to remove that song. The queue might have changed.")
                  logger.warning(f"IndexError during remove command for position {position} in guild {guild_id}.")
             except Exception as e:
@@ -371,9 +472,6 @@ class MusicCog(commands.Cog):
         else:
             await ctx.send(f"Invalid song number. Please provide a number between 1 and {len(queue)}.")
 
-    # --- Error Handling for Remove Command (specifically for type errors) ---
-    # Add this error handler within the MusicCog class if you want more specific messages
-    # than the generic cog_command_error might provide for this command.
     @remove.error
     async def remove_error(self, ctx: commands.Context, error: commands.CommandError):
         """Handles errors specifically for the !remove command."""
@@ -382,10 +480,9 @@ class MusicCog(commands.Cog):
         elif isinstance(error, commands.BadArgument):
             await ctx.send("Invalid input. Please provide a valid number for the song position.")
         else:
-            # For other errors, fall back to the generic cog error handler or just log it
             logger.error(f"An unexpected error occurred in the remove command: {error}")
-            # You could optionally send a generic error message to the user here too.
-            # await ctx.send("An unexpected error occurred.")
+            # Optional: send a generic error message
+            # await ctx.send("An unexpected error occurred processing the remove command.")
 
     @commands.command(name='clear', help='Clears the song queue.')
     async def clear(self, ctx: commands.Context):
@@ -406,44 +503,43 @@ class MusicCog(commands.Cog):
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState,
                                     after: discord.VoiceState):
         """Checks if the bot should disconnect when a voice channel becomes empty."""
-        # Ignore if the event was triggered by the bot itself
         if member.id == self.bot.user.id:
             return
 
         guild_id = member.guild.id
-
-        # Check if the bot is connected to a voice channel in this guild
         vc = self.voice_clients.get(guild_id)
         if not vc or not vc.is_connected():
             return
 
         # Check if the event happened in the bot's current channel
-        # We only care if someone *left* the bot's channel (before.channel was the bot's channel)
-        if before.channel == vc.channel:
-            # Now check who is left in the channel
-            # Use vc.channel again to get the potentially updated member list
-            # Filter out the bot itself to see if any humans remain
+        if before.channel == vc.channel and after.channel != vc.channel: # User left the bot's channel
+             # Check who is left in the channel
             human_members = [m for m in vc.channel.members if not m.bot]
 
             if not human_members:
-                # No human members left, only the bot (or it's truly empty)
-                logger.info(f"Voice channel {vc.channel.name} in guild {guild_id} is empty. Disconnecting.")
-                # Stop playback if any is happening (optional, disconnect might handle this)
-                if vc.is_playing() or vc.is_paused():
-                    vc.stop()
+                logger.info(f"Voice channel {vc.channel.name} in guild {guild_id} is empty. Scheduling disconnect.")
+                # Introduce a small delay before disconnecting
+                # This helps prevent race conditions if someone quickly rejoins
+                await asyncio.sleep(10) # Wait 10 seconds
 
-                # Disconnect and clean up state
-                await vc.disconnect()
-                # Use .pop(guild_id, None) to safely remove entries if they exist
-                self.voice_clients.pop(guild_id, None)
-                self.queues.pop(guild_id, None)
-                self.current_song.pop(guild_id, None)
-                self.last_activity.pop(guild_id, None)
-                # Optionally send a message to the text channel where the last command was used
-                # (Requires storing the last context, adds complexity)
-                # last_ctx = self.last_contexts.pop(guild_id, None)
-                # if last_ctx:
-                #    await last_ctx.send("Disconnected because the voice channel became empty.")
+                # Re-check after the delay if the bot is still connected and channel still empty
+                vc = self.voice_clients.get(guild_id) # Get potentially updated vc state
+                if vc and vc.is_connected() and before.channel == vc.channel: # Ensure we're still in the *same* channel
+                     current_human_members = [m for m in vc.channel.members if not m.bot]
+                     if not current_human_members:
+                         logger.info(f"Disconnecting from empty channel {vc.channel.name} in guild {guild_id} after delay.")
+                         if vc.is_playing() or vc.is_paused():
+                             vc.stop()
+                         await vc.disconnect()
+                         self.voice_clients.pop(guild_id, None)
+                         self.queues.pop(guild_id, None)
+                         self.current_song.pop(guild_id, None)
+                         self.last_activity.pop(guild_id, None)
+                     else:
+                          logger.info(f"Disconnect cancelled for guild {guild_id}, user rejoined.")
+                else:
+                     logger.info(f"Disconnect cancelled for guild {guild_id}, state changed during delay.")
+
 
     # --- Inactivity Check Task ---
     @tasks.loop(minutes=1.0) # Check every minute
@@ -459,7 +555,6 @@ class MusicCog(commands.Cog):
 
             # Check if VC exists, is connected, is not playing/paused, and has activity tracked
             if vc and vc.is_connected() and not vc.is_playing() and not vc.is_paused() and last_act:
-                # Check if inactivity timeout exceeded
                 if (now - last_act) > inactive_threshold:
                     logger.info(f"Disconnecting from guild {guild_id} due to inactivity.")
                     await vc.disconnect()
@@ -468,12 +563,9 @@ class MusicCog(commands.Cog):
                     self.queues.pop(guild_id, None)
                     self.current_song.pop(guild_id, None)
                     self.last_activity.pop(guild_id, None)
-                    # Optionally send a message to the last channel the bot was used in
-                    # Requires storing the last text channel used, which adds complexity.
+                    # Consider sending a message to a default channel if possible
             elif vc and vc.is_connected() and (vc.is_playing() or vc.is_paused()):
-                # If playing or paused, ensure the last activity time is recent
-                # This prevents the bot from disconnecting if paused for a long time
-                # but user intends to resume. Could be adjusted based on preference.
+                # If playing or paused, reset the inactivity timer
                 self.last_activity[guild_id] = now
 
 
@@ -486,17 +578,27 @@ class MusicCog(commands.Cog):
     # --- Cog Error Handling ---
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
         """Handles errors specific to this cog."""
-        logger.error(f"Error in command '{ctx.command}': {error}")
+        # Ignore specific errors handled locally
+        if isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument)) and ctx.command.name == 'remove':
+             return # Already handled by remove_error
+
+        logger.error(f"Error in command '{ctx.command.qualified_name if ctx.command else 'Unknown'}': {error}")
+
         if isinstance(error, commands.CommandNotFound):
-            # This might be handled globally, but good to have locally too
             await ctx.send("Invalid command. Use `!help` to see available commands.")
         elif isinstance(error, commands.MissingRequiredArgument):
-            await ctx.send(f"Missing argument: `{error.param.name}`. Use `!help {ctx.command}` for usage.")
+            await ctx.send(f"Missing argument: `{error.param.name}`. Use `!help {ctx.command.qualified_name}` for usage.")
+        elif isinstance(error, commands.BadArgument):
+             await ctx.send(f"Invalid argument provided. Use `!help {ctx.command.qualified_name}` for usage.")
         elif isinstance(error, commands.CheckFailure):
             await ctx.send("You don't have the necessary permissions to use this command.")
+        elif isinstance(error, commands.CommandInvokeError):
+            # More serious errors during command execution
+             await ctx.send(f"An error occurred while executing the command. Please check the logs or contact the admin. Error: {error.original}")
+             logger.exception(f"CommandInvokeError in {ctx.command.qualified_name}: {error.original}")
         else:
             # Generic error message for other cases
-            await ctx.send(f"An error occurred: {error}")
+            await ctx.send(f"An unexpected error occurred: {error}")
 
 
 # --- Bot Event Handlers ---
@@ -513,12 +615,15 @@ async def on_ready():
 
 # --- Run the Bot ---
 if __name__ == "__main__":
-    if DISCORD_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        print("ERROR: Please replace 'YOUR_BOT_TOKEN_HERE' with your actual bot token in the script.")
+    if not DISCORD_TOKEN or DISCORD_TOKEN == "YOUR_BOT_TOKEN_HERE": # Added explicit check
+        print("CRITICAL ERROR: DISCORD_BOT_TOKEN not found or not set correctly in environment variables/.env file.")
+        exit()
     else:
         try:
             bot.run(DISCORD_TOKEN, log_handler=None) # Use our basicConfig, disable default
         except discord.LoginFailure:
              logger.error("Login failed: Invalid Discord token provided.")
+             print("CRITICAL ERROR: Invalid Discord Token. Please check your .env file or environment variable.")
         except Exception as e:
              logger.exception(f"Fatal error during bot execution: {e}")
+             print(f"FATAL ERROR: {e}")
