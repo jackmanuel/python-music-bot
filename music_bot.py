@@ -8,6 +8,7 @@ from collections import deque
 import os # For token loading
 from dotenv import load_dotenv
 import math # For clamping elapsed time
+import concurrent.futures
 
 # --- Load environment variables from .env file ---
 load_dotenv() # <--- CALL THIS EARLY
@@ -58,6 +59,26 @@ FFMPEG_OPTIONS = {
     'executable': FFMPEG_PATH
 }
 
+def run_yt_dlp_extractor(query):
+    """
+    Runs yt-dlp extract_info in a way that's pickleable for multiprocessing.
+    Needs YDL_OPTIONS to be globally accessible or passed explicitly if refactored.
+    """
+    try:
+        # NOTE: Creates a new YoutubeDL instance each time in the new process.
+        # This is generally fine for ProcessPoolExecutor.
+        with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
+            data = ydl.extract_info(query, download=False)
+        return data
+    except Exception as e:
+        # Log or handle errors occurring *within* the worker process if necessary
+        # For simplicity, we'll let the main process catch it via the future
+        logger.error(f"Error within run_yt_dlp_extractor for '{query}': {e}")
+        # Re-raise or return an indicator if needed, but often letting the
+        # executor raise it in the main thread is sufficient.
+        raise # Re-raise the exception to be caught by the await call
+
+
 # --- Bot Class ---
 intents = discord.Intents.default()
 intents.message_content = True  # Enable message content intent
@@ -73,7 +94,19 @@ class MusicCog(commands.Cog):
         self.current_song = {} # Dictionary to hold current song info {guild_id: song_info}
         self.voice_clients = {} # Dictionary to hold voice clients {guild_id: voice_client}
         self.last_activity = {} # Dictionary to track last activity time {guild_id: timestamp}
+        # Use half the cores, minimum 1
+        cpu_cores = os.cpu_count() or 1
+        max_workers = max(1, cpu_cores // 2)
+        logger.info(f"Initializing ProcessPoolExecutor with max_workers={max_workers}")
+        self.process_executor = concurrent.futures.ProcessPoolExecutor(max_workers=max_workers)
         self.inactivity_check.start()
+
+    def cog_unload(self):
+        logger.info("Shutting down ProcessPoolExecutor...")
+        # Shutdown executor - True waits, False returns immediately
+        self.process_executor.shutdown(wait=True)
+        logger.info("Cancelling inactivity check task.")
+        self.inactivity_check.cancel()
 
     def get_queue(self, guild_id):
         """Gets the queue for a guild, creating it if it doesn't exist."""
@@ -102,19 +135,26 @@ class MusicCog(commands.Cog):
         """Extracts info using yt-dlp in an executor to avoid blocking."""
         loop = asyncio.get_event_loop()
         try:
-            # Use run_in_executor for the blocking I/O operation
+            logger.debug(f"Submitting yt-dlp extraction for '{query}' to process pool.")
+            # Call the top-level function, passing the query as an argument
             data = await loop.run_in_executor(
-                None, lambda: yt_dlp.YoutubeDL(YDL_OPTIONS).extract_info(query, download=False)
+                self.process_executor,
+                run_yt_dlp_extractor,  # Pass the function itself
+                query  # Pass the argument(s) for the function
             )
+            logger.debug(f"Successfully retrieved data for '{query}' from process pool.")
+
+            if not data:
+                logger.warning(f"Extraction returned no data for '{query}'.")
+                return None
 
             if 'entries' in data:
-                # Take the first item from a playlist or search result
                 logger.info(f"Found multiple entries for '{query}', using first result.")
                 data = data['entries'][0]
 
-            if not data or 'url' not in data:
-                 logger.warning(f"Could not extract stream URL for '{query}'. Data: {data}")
-                 return None
+            if 'url' not in data:
+                logger.warning(f"Could not extract stream URL for '{query}'. Missing 'url' key. Data: {data}")
+                return None
 
             # Prepare song info dictionary
             song_info = {
@@ -127,12 +167,22 @@ class MusicCog(commands.Cog):
             }
             return song_info
 
-        except yt_dlp.utils.DownloadError as e:
-            logger.error(f"yt-dlp error extracting info for '{query}': {e}")
-            return None
+        # This catches errors from within run_yt_dlp_extractor or pickling issues
         except Exception as e:
-            logger.exception(f"Unexpected error extracting info for '{query}': {e}")
-            return None
+            # Check if it's the specific pickle error, though the fix should prevent it
+            if "Can't pickle" in str(e):
+                 logger.critical(f"Pickling error encountered despite fix attempt for '{query}': {e}", exc_info=True)
+            # Catch errors from the yt-dlp process itself
+            elif isinstance(e, yt_dlp.utils.DownloadError):
+                 logger.error(f"yt-dlp DownloadError extracting info for '{query}': {e}")
+            # Handle pool shutdown errors
+            elif isinstance(e, concurrent.futures.process.BrokenProcessPool):
+                 logger.error(f"Process Pool Broken during info extraction for '{query}'. It might be shutting down or crashed: {e}")
+            else:
+                # Log other unexpected exceptions from run_in_executor or within the target function
+                logger.exception(f"Unexpected error during info extraction process for '{query}': {e}")
+            return None # Return None on any extraction error
+
 
     def _play_next(self, guild_id, error=None):
         """Callback function executed after a song finishes or errors."""
@@ -412,7 +462,7 @@ class MusicCog(commands.Cog):
             bar_length = 20 # characters
             progress_ratio = elapsed_seconds / total_duration if total_duration > 0 else 0
             filled_length = int(bar_length * progress_ratio)
-            bar = '▬' * filled_length + '─' * (bar_length - filled_length)
+            bar = '█' * filled_length + '░' * (bar_length - filled_length)
             progress_str += f"\n`[{bar}]`"
 
         elif total_duration:
@@ -607,23 +657,31 @@ async def on_ready():
     """Called when the bot is ready and connected to Discord."""
     logger.info(f'Logged in as {bot.user.name} ({bot.user.id})')
     logger.info('Bot is ready and online.')
-    # Add the cog after the bot is ready
-    await bot.add_cog(MusicCog(bot))
+    # Store the cog instance to potentially unload it later
+    music_cog_instance = MusicCog(bot)
+    await bot.add_cog(music_cog_instance)
     print(f'Bot {bot.user.name} is ready.')
     await bot.change_presence(activity=discord.Game(name="Music | !help")) # Set status
 
 
 # --- Run the Bot ---
 if __name__ == "__main__":
-    if not DISCORD_TOKEN or DISCORD_TOKEN == "YOUR_BOT_TOKEN_HERE": # Added explicit check
+    if not DISCORD_TOKEN or DISCORD_TOKEN == "YOUR_BOT_TOKEN_HERE":
         print("CRITICAL ERROR: DISCORD_BOT_TOKEN not found or not set correctly in environment variables/.env file.")
         exit()
     else:
         try:
-            bot.run(DISCORD_TOKEN, log_handler=None) # Use our basicConfig, disable default
+            logger.info("Starting bot...")
+            bot.run(DISCORD_TOKEN, log_handler=None) # Use our basicConfig
         except discord.LoginFailure:
              logger.error("Login failed: Invalid Discord token provided.")
              print("CRITICAL ERROR: Invalid Discord Token. Please check your .env file or environment variable.")
+        except KeyboardInterrupt:
+             logger.info("Bot shutdown requested via KeyboardInterrupt.")
+             # Note: bot.close() should ideally be called for clean async shutdown,
+             # but bot.run handles Ctrl+C fairly well by itself, triggering cleanup.
         except Exception as e:
              logger.exception(f"Fatal error during bot execution: {e}")
              print(f"FATAL ERROR: {e}")
+        finally:
+            logger.info("Bot process finished.")
