@@ -22,17 +22,23 @@ if not DISCORD_TOKEN:
     print("Make sure you have a .env file with DISCORD_BOT_TOKEN=YOUR_TOKEN")
     exit() # Exit if the token is missing
 
-FFMPEG_PATH = "ffmpeg" # Or specify the full path if not in system PATH, e.g., "/usr/bin/ffmpeg"
+# --- Load FFmpeg Path from environment variable ---
+# Get the path from .env, defaulting to just "ffmpeg" if the variable is not set.
+# This allows it to still work if FFmpeg is in the system PATH and the .env variable isn't defined.
+FFMPEG_EXECUTABLE = os.getenv("FFMPEG_EXECUTABLE_PATH", "ffmpeg")
+
 INACTIVITY_TIMEOUT_MINUTES = 30 # Minutes before leaving the voice channel due to inactivity
 
 # --- Basic Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(levelname)s:%(name)s: %(message)s')
 logger = logging.getLogger('discord')
 
+# Add a log message to confirm which FFmpeg path is being used
+logger.info(f"Using FFmpeg executable located at: {FFMPEG_EXECUTABLE}")
+
 # --- yt-dlp Options ---
-# Optimized for streaming, low resource usage
 YDL_OPTIONS = {
-    'format': 'bestaudio[ext=opus]/bestaudio[acodec=opus]/bestaudio/best',
+    'format': 'bestaudio/best',
     'extractaudio': True,
     'audioformat': 'opus',
     'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
@@ -56,7 +62,7 @@ YDL_OPTIONS = {
 FFMPEG_OPTIONS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
     'options': '-vn',
-    'executable': FFMPEG_PATH
+    'executable': FFMPEG_EXECUTABLE
 }
 
 def run_yt_dlp_extractor(query):
@@ -96,7 +102,7 @@ class MusicCog(commands.Cog):
         self.last_activity = {} # Dictionary to track last activity time {guild_id: timestamp}
         # Use half the cores, minimum 1
         cpu_cores = os.cpu_count() or 1
-        max_workers = max(1, cpu_cores // 2)
+        max_workers = max(1, cpu_cores // 4)
         logger.info(f"Initializing ProcessPoolExecutor with max_workers={max_workers}")
         self.process_executor = concurrent.futures.ProcessPoolExecutor(max_workers=max_workers)
         self.inactivity_check.start()
@@ -205,6 +211,7 @@ class MusicCog(commands.Cog):
         next_song_info['start_time'] = time.time()
         self.current_song[guild_id] = next_song_info
         logger.info(f"Playing next song in guild {guild_id}: {next_song_info['title']}")
+        logger.debug(f"Attempting to play next URL: {next_song_info['url']}")
 
         if guild_id not in self.voice_clients or not self.voice_clients[guild_id].is_connected():
             logger.warning(f"Voice client not available or disconnected in guild {guild_id} when trying to play next.")
@@ -308,9 +315,26 @@ class MusicCog(commands.Cog):
         vc = self.voice_clients[guild_id]
         queue = self.get_queue(guild_id)
 
-        # 3. Extract song info
-        await ctx.send(f"Searching for `{query}`...")
-        song_info = await self._extract_info(query)
+        # 3. Check if the query looks like a URL (starts with http)
+        query_stripped = query.strip()  # Use strip() to handle leading/trailing spaces
+        is_url = query_stripped.startswith("http://") or query_stripped.startswith("https://")
+
+        # 3. Extract song info - Send status message conditionally
+        processing_message = None  # Keep track of the message if we send one
+        if is_url:
+            # It's a URL, proceed without the "Searching..." message.
+            # You could optionally send a "Processing URL..." message here if desired.
+            processing_message = await ctx.send(f"Processing URL...")
+            logger.info(f"Processing direct URL: {query_stripped}")
+            pass  # No searching message needed
+        else:
+            # It's likely a search term (or an invalid URL not starting with http)
+            processing_message = await ctx.send(f"Searching for `{query_stripped}`...")
+            # Ensure yt-dlp uses default search if it's not a URL
+            # This is already handled by YDL_OPTIONS['default_search'] = 'ytsearch'
+
+        # Pass the stripped query to the extractor
+        song_info = await self._extract_info(query_stripped)
 
         if not song_info:
             await ctx.send(f"Could not find or process `{query}`. Please check the URL or search terms.")
@@ -331,6 +355,7 @@ class MusicCog(commands.Cog):
             song_info['start_time'] = time.time()
             self.current_song[guild_id] = song_info
             logger.info(f"Playing immediately in guild {guild_id}: {song_info['title']}")
+            logger.debug(f"Attempting to play URL: {song_info['url']}")
             try:
                 source = discord.FFmpegPCMAudio(song_info['url'], **FFMPEG_OPTIONS)
                 vc.play(source, after=lambda e: self._play_next(guild_id, e))
