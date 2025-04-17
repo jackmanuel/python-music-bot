@@ -13,4 +13,9 @@ __pycache__/
 *.log
 *.opus
 *.webm
+*.bat
+*.db
+test_ffmpeg.py
+juan_musicbot.py
+*.ipynb
 # etc.

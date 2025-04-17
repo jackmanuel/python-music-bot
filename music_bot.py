@@ -7,8 +7,9 @@ import time
 from collections import deque
 import os # For token loading
 from dotenv import load_dotenv
-import math # For clamping elapsed time
 import concurrent.futures
+
+from database_manager import DatabaseManager
 
 # --- Load environment variables from .env file ---
 load_dotenv() # <--- CALL THIS EARLY
@@ -28,6 +29,10 @@ if not DISCORD_TOKEN:
 FFMPEG_EXECUTABLE = os.getenv("FFMPEG_EXECUTABLE_PATH", "ffmpeg")
 
 INACTIVITY_TIMEOUT_MINUTES = 30 # Minutes before leaving the voice channel due to inactivity
+
+# --- Database Configuration ---
+# Define the path here, or load from .env for more flexibility
+DATABASE_FILE = os.getenv("DATABASE_FILE_PATH", "music_log.db")
 
 # --- Basic Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(levelname)s:%(name)s: %(message)s')
@@ -89,6 +94,7 @@ def run_yt_dlp_extractor(query):
 intents = discord.Intents.default()
 intents.message_content = True  # Enable message content intent
 intents.voice_states = True     # Enable voice state intent for joining/leaving tracking
+intents.members = True # Needed for stats command
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -100,11 +106,14 @@ class MusicCog(commands.Cog):
         self.current_song = {} # Dictionary to hold current song info {guild_id: song_info}
         self.voice_clients = {} # Dictionary to hold voice clients {guild_id: voice_client}
         self.last_activity = {} # Dictionary to track last activity time {guild_id: timestamp}
-        # Use half the cores, minimum 1
+        # Use 1 quarter the cores, minimum 1
         cpu_cores = os.cpu_count() or 1
         max_workers = max(1, cpu_cores // 4)
         logger.info(f"Initializing ProcessPoolExecutor with max_workers={max_workers}")
         self.process_executor = concurrent.futures.ProcessPoolExecutor(max_workers=max_workers)
+
+        self.db_manager = DatabaseManager(DATABASE_FILE) # Pass the configured DB file path
+
         self.inactivity_check.start()
 
     def cog_unload(self):
@@ -293,12 +302,12 @@ class MusicCog(commands.Cog):
         guild_id = ctx.guild.id
         self.last_activity[guild_id] = time.time() # Update activity
 
-        # 1. Ensure user is in a voice channel
+        # Ensure user is in a voice channel
         if ctx.author.voice is None:
             await ctx.send("You need to be in a voice channel to play music.")
             return
 
-        # 2. Ensure bot is in a voice channel (or join the user's)
+        # Ensure bot is in a voice channel (or join the user's)
         user_channel = ctx.author.voice.channel
         if guild_id not in self.voice_clients or not self.voice_clients[guild_id].is_connected():
             logger.info(f"Play command used, joining {user_channel.name} in {guild_id}.")
@@ -315,23 +324,18 @@ class MusicCog(commands.Cog):
         vc = self.voice_clients[guild_id]
         queue = self.get_queue(guild_id)
 
-        # 3. Check if the query looks like a URL (starts with http)
+        # Check if the query looks like a URL (starts with http)
         query_stripped = query.strip()  # Use strip() to handle leading/trailing spaces
         is_url = query_stripped.startswith("http://") or query_stripped.startswith("https://")
 
-        # 3. Extract song info - Send status message conditionally
+        # Extract song info - Send status message conditionally
         processing_message = None  # Keep track of the message if we send one
         if is_url:
-            # It's a URL, proceed without the "Searching..." message.
-            # You could optionally send a "Processing URL..." message here if desired.
             processing_message = await ctx.send(f"Processing URL...")
             logger.info(f"Processing direct URL: {query_stripped}")
             pass  # No searching message needed
         else:
-            # It's likely a search term (or an invalid URL not starting with http)
             processing_message = await ctx.send(f"Searching for `{query_stripped}`...")
-            # Ensure yt-dlp uses default search if it's not a URL
-            # This is already handled by YDL_OPTIONS['default_search'] = 'ytsearch'
 
         # Pass the stripped query to the extractor
         song_info = await self._extract_info(query_stripped)
@@ -340,7 +344,20 @@ class MusicCog(commands.Cog):
             await ctx.send(f"Could not find or process `{query}`. Please check the URL or search terms.")
             return
 
-        # 4. Add to queue or play immediately
+        try:
+            # Call the method on the db_manager instance
+            self.db_manager.log_song_request(
+                user_id=ctx.author.id,
+                user_name=str(ctx.author),  # Get username
+                guild_id=ctx.guild.id,
+                query=query_stripped,  # Use the original query
+                resolved_title=song_info.get('title', 'N/A'),  # Get title from extracted info
+                resolved_url=song_info.get('webpage_url')  # Get webpage_url
+            )
+        except Exception as e:
+            # Log if the logging itself fails, but don't stop playback
+            logger.error(f"Error occurred during song request logging via DB Manager: {e}", exc_info=True)
+
         # Check if currently playing, paused, OR if current_song is set (might be transitioning)
         is_active = vc.is_playing() or vc.is_paused() or (guild_id in self.current_song and self.current_song[guild_id] is not None)
         if is_active:
@@ -441,7 +458,6 @@ class MusicCog(commands.Cog):
 
         await ctx.send(embed=embed)
 
-    # --- NEW COMMAND: NOW PLAYING ---
     @commands.command(name='nowplaying', aliases=['np'], help='Shows the currently playing song and its progress.')
     async def nowplaying(self, ctx: commands.Context):
         """Displays the current song and playback progress."""
@@ -511,8 +527,6 @@ class MusicCog(commands.Cog):
         if vc.is_paused():
             logger.debug(f"NP command used while paused in guild {guild_id}. Displayed time may not reflect exact pause point.")
 
-    # --- END OF NEW COMMAND ---
-
     @commands.command(name='remove', help='Removes a song from the queue by its number (use !queue to see numbers).')
     async def remove(self, ctx: commands.Context, position: int):
         """Removes a song from the queue specified by its 1-based position."""
@@ -573,6 +587,91 @@ class MusicCog(commands.Cog):
         queue.clear()
         await ctx.send("Song queue cleared!")
         logger.info(f"Queue cleared for guild {guild_id} by command.")
+
+    @commands.command(name='stats', help='Shows song request stats for a user (or yourself).')
+    async def stats(self, ctx: commands.Context, *, member: discord.Member = None):
+        """Shows the total number of songs requested by the specified user or yourself."""
+        target_user = member or ctx.author
+
+        logger.info(f"Stats command invoked by {ctx.author} for user {target_user}")
+
+        # --- Fetch stats using the DatabaseManager ---
+        try:
+            # Call the method on the db_manager instance
+            request_count = self.db_manager.get_user_stats(target_user.id)
+        except Exception as e:
+             logger.error(f"Error getting stats via DB Manager for user {target_user.id}: {e}", exc_info=True)
+             await ctx.send("An error occurred while fetching stats.")
+             return
+
+        # Send the result
+        await ctx.send(f"📊 **{target_user.display_name}** has requested **{request_count}** track(s).")
+
+    @stats.error
+    async def stats_error(self, ctx: commands.Context, error: commands.CommandError):
+        """Handles errors for the !stats command."""
+        if isinstance(error, commands.MemberNotFound):
+            # 'argument' contains the raw string input that failed conversion
+            user_input = error.argument
+            await ctx.send(
+                f"Could not find a member matching '{user_input}' in this server. Please use their @mention, username#discriminator, or user ID.")
+            # You might want to add self.logger.warning here too
+            logger.warning(f"MemberNotFound error in stats command: Input='{user_input}', Guild='{ctx.guild.id}'")
+        elif isinstance(error, commands.CommandInvokeError):
+            # This catches errors *inside* the stats command logic (e.g., database errors that weren't caught)
+            logger.error(f"Error during stats command execution: {error.original}", exc_info=True)
+            await ctx.send("An unexpected error occurred while processing the stats command.")
+            # Mark the error as handled if you have a generic cog error handler
+            # error.original.handled = True # Add this if your generic handler shouldn't also report this
+        else:
+            # Handle other potential errors specific to this command if needed
+            logger.error(f"Unhandled error in stats command: {error}", exc_info=True)
+            await ctx.send("An error occurred processing the stats command.")
+
+    @commands.command(name='leaderboard', aliases=['lb'], help='Shows the top 5 song requesters.')
+    async def leaderboard(self, ctx: commands.Context):
+        """Displays the top 5 users by song request count."""
+        logger.info(f"Leaderboard command invoked by {ctx.author} in guild {ctx.guild.id}")
+
+        try:
+            top_users_data = self.db_manager.get_leaderboard_stats(limit=5)
+        except Exception as e:
+            logger.error(f"Error fetching leaderboard data via DB Manager: {e}", exc_info=True)
+            await ctx.send("An error occurred while fetching the leaderboard.")
+            return
+
+        if not top_users_data:
+            await ctx.send("No song request data available yet to generate a leaderboard.")
+            return
+
+        embed = discord.Embed(
+            title="🏆 Top Song Requesters 🏆",
+            color=discord.Color.gold()
+        )
+
+        description_lines = []
+        rank_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+        for i, user_data in enumerate(top_users_data):
+            rank = i + 1
+            user_id = user_data['user_id']
+            db_user_name = user_data['user_name']  # Fallback name from DB
+            request_count = user_data['request_count']
+
+            # Try to find the member in the current guild for up-to-date name
+            member = ctx.guild.get_member(user_id)
+            display_name = member.display_name if member else db_user_name
+            # Add "(Not Found)" if member left server but is on leaderboard
+            not_found_tag = "" if member else " *(user not in server)*"
+
+            rank_display = rank_emojis.get(rank, f"{rank}.")  # Use emoji or just rank number
+            line = f"{rank_display} **{discord.utils.escape_markdown(display_name)}**{not_found_tag}: **{request_count}** requests"
+            description_lines.append(line)
+
+        embed.description = "\n".join(description_lines)
+        embed.set_footer(text="Based on total songs requested via the bot.")
+
+        await ctx.send(embed=embed)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState,
