@@ -628,20 +628,20 @@ class MusicCog(commands.Cog):
             logger.error(f"Unhandled error in stats command: {error}", exc_info=True)
             await ctx.send("An error occurred processing the stats command.")
 
-    @commands.command(name='leaderboard', aliases=['lb'], help='Shows the top 5 song requesters.')
+    @commands.command(name='leaderboard', aliases=['lb'], help='Shows the top 5 song requesters in this server.')
     async def leaderboard(self, ctx: commands.Context):
-        """Displays the top 5 users by song request count."""
+        """Displays the top 5 users by song request count for this server."""
         logger.info(f"Leaderboard command invoked by {ctx.author} in guild {ctx.guild.id}")
 
         try:
-            top_users_data = self.db_manager.get_leaderboard_stats(limit=5)
+            top_users_data = self.db_manager.get_leaderboard_stats(guild_id=ctx.guild.id, limit=5)
         except Exception as e:
             logger.error(f"Error fetching leaderboard data via DB Manager: {e}", exc_info=True)
             await ctx.send("An error occurred while fetching the leaderboard.")
             return
 
         if not top_users_data:
-            await ctx.send("No song request data available yet to generate a leaderboard.")
+            await ctx.send("No song request data available yet for this server to generate a leaderboard.")
             return
 
         embed = discord.Embed(
@@ -669,7 +669,7 @@ class MusicCog(commands.Cog):
             description_lines.append(line)
 
         embed.description = "\n".join(description_lines)
-        embed.set_footer(text="Based on total songs requested via the bot.")
+        embed.set_footer(text="Based on total songs requested via the bot on this server.")
 
         await ctx.send(embed=embed)
 

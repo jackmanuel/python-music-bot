@@ -111,7 +111,7 @@ class DatabaseManager:
              if conn:
                  conn.close()
 
-    def get_user_stats(self, user_id: int) -> int:
+    def get_user_stats(self, user_id: int) -> Union[Optional[int], Any]:
         """
         Gets the total request count for a given user ID.
 
@@ -142,12 +142,13 @@ class DatabaseManager:
                 conn.close()
         return count
 
-    def get_leaderboard_stats(self, limit: int = 5) -> Optional[list[dict[str, Any]]]:
+    def get_leaderboard_stats(self, guild_id: int, limit: int = 5) -> Optional[list[dict[str, Any]]]:
         """
         Gets the top users based on song request count.
 
         Args:
             limit (int): The maximum number of users to return.
+            guild_id (int): The Discord Guild ID to filter the leaderboard by.
 
         Returns:
             A list of dictionaries, each containing 'user_id', 'user_name',
@@ -174,10 +175,11 @@ class DatabaseManager:
                                 user_name,
                                 COUNT(request_id) as request_count
                             FROM play_history
-                            GROUP BY user_id
+                            WHERE guild_id = ?  -- Filter by the specific guild_id
+                            GROUP BY user_id    -- Group within that guild
                             ORDER BY request_count DESC
                             LIMIT ?
-                        """, (limit,))
+                        """, (guild_id, limit)) # Pass guild_id first, then limit
                 results: List[sqlite3.Row] = cursor.fetchall()  # Hint fetchall result type
 
                 for row in results:
