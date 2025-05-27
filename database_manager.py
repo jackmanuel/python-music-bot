@@ -111,7 +111,7 @@ class DatabaseManager:
              if conn:
                  conn.close()
 
-    def get_user_stats(self, user_id: int) -> Union[Optional[int], Any]:
+    def get_user_stats(self, user_id: int) -> Optional[int]:
         """
         Gets the total request count for a given user ID.
 
@@ -119,12 +119,13 @@ class DatabaseManager:
             user_id: The Discord user ID.
 
         Returns:
-            The total number of requests made by the user, or 0 if an error occurs.
+            The total number of requests made by the user, 0 if the user has no
+            requests, or None if a database error occurs.
         """
         conn = self._get_db_connection()
         if not conn:
-            logger.warning(f"Failed to get DB connection for fetching stats for user {user_id}.")
-            return 0
+            logger.warning(f"Failed to get DB connection for fetching stats for user {user_id}. Returning None.")
+            return None
 
         count = 0
         try:
@@ -136,7 +137,8 @@ class DatabaseManager:
                     count = result[0]
                 logger.debug(f"Fetched stats for user {user_id}: Count={count}")
         except sqlite3.Error as e:
-            logger.error(f"Failed to query stats for user {user_id} from {self.db_file}: {e}", exc_info=True)
+            logger.error(f"Failed to query stats for user {user_id} from {self.db_file}: {e}. Returning None.", exc_info=True)
+            return None
         finally:
             if conn:
                 conn.close()
@@ -153,7 +155,8 @@ class DatabaseManager:
         Returns:
             A list of dictionaries, each containing 'user_id', 'user_name',
             and 'request_count', ordered by request_count descending.
-            Returns an empty list on error or if no data exists.
+            Returns an empty list [] if there is no data for the leaderboard.
+            Returns None if a database connection error or query error occurs.
         """
         # Initialize the result list with the precise target type *before* any operations
         leaderboard_data: List[Dict[str, Any]] = []
@@ -162,9 +165,8 @@ class DatabaseManager:
         try:
             conn = self._get_db_connection()
             if conn is None:  # Use 'is None' for explicit None check
-                logger.warning("Failed to get DB connection for fetching leaderboard stats (returned None).")
-                # Return the pre-initialized empty list matching the type hint
-                return leaderboard_data
+                logger.warning("Failed to get DB connection for fetching leaderboard stats. Returning None.")
+                return None
 
             # Proceed only if conn is not None
             with conn:
@@ -194,8 +196,8 @@ class DatabaseManager:
 
                 logger.debug(f"Fetched leaderboard stats: Found {len(leaderboard_data)} users.")
         except sqlite3.Error as e:
-            logger.error(f"Failed to query leaderboard stats from {self.db_file}: {e}", exc_info=True)
-            return []  # Return empty list on error
+            logger.error(f"Failed to query leaderboard stats from {self.db_file}: {e}. Returning None.", exc_info=True)
+            return None
         finally:
             if conn:
                 conn.close()

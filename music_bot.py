@@ -8,6 +8,7 @@ from collections import deque
 import os # For token loading
 from dotenv import load_dotenv
 import concurrent.futures
+import subprocess # Added for FFmpeg check
 
 from database_manager import DatabaseManager
 
@@ -40,6 +41,29 @@ logger = logging.getLogger('discord')
 
 # Add a log message to confirm which FFmpeg path is being used
 logger.info(f"Using FFmpeg executable located at: {FFMPEG_EXECUTABLE}")
+
+# --- FFmpeg Check Function ---
+def check_ffmpeg(ffmpeg_path: str) -> bool:
+    """Checks if FFmpeg is accessible and working."""
+    try:
+        process = subprocess.run([ffmpeg_path, "-version"], capture_output=True, text=True, check=False) # check=False to handle non-zero exits manually
+        if process.returncode == 0 and "ffmpeg version" in process.stdout.lower():
+            # Extract the first line for a concise version log
+            version_line = process.stdout.splitlines()[0]
+            logger.info(f"FFmpeg check successful. Version: {version_line.strip()} (Path: {ffmpeg_path})")
+            return True
+        else:
+            error_message = f"FFmpeg check failed (Path: {ffmpeg_path}). Return code: {process.returncode}\n"
+            error_message += f"Stdout: {process.stdout.strip()}\n"
+            error_message += f"Stderr: {process.stderr.strip()}"
+            logger.critical(error_message)
+            return False
+    except FileNotFoundError:
+        logger.critical(f"FFmpeg executable not found at path: {ffmpeg_path}. Please install FFmpeg and ensure it's in your system PATH or FFMPEG_EXECUTABLE_PATH is set correctly in .env.")
+        return False
+    except Exception as e:
+        logger.critical(f"An unexpected error occurred while checking FFmpeg (Path: {ffmpeg_path}): {e}", exc_info=True)
+        return False
 
 # --- yt-dlp Options ---
 YDL_OPTIONS = {
@@ -218,6 +242,8 @@ class MusicCog(commands.Cog):
         next_song_info = queue.popleft()
         # Set start time *just before* playback
         next_song_info['start_time'] = time.time()
+        next_song_info['accumulated_duration'] = 0
+        next_song_info['is_paused'] = False
         self.current_song[guild_id] = next_song_info
         logger.info(f"Playing next song in guild {guild_id}: {next_song_info['title']}")
         logger.debug(f"Attempting to play next URL: {next_song_info['url']}")
@@ -370,6 +396,8 @@ class MusicCog(commands.Cog):
         else:
             # Set start time *just before* playback
             song_info['start_time'] = time.time()
+            song_info['accumulated_duration'] = 0
+            song_info['is_paused'] = False
             self.current_song[guild_id] = song_info
             logger.info(f"Playing immediately in guild {guild_id}: {song_info['title']}")
             logger.debug(f"Attempting to play URL: {song_info['url']}")
@@ -392,6 +420,83 @@ class MusicCog(commands.Cog):
                 await ctx.send("An unexpected error occurred while trying to play.")
                 logger.exception(f"Unexpected error during initial play in {guild_id}: {e}")
                 self.current_song.pop(guild_id, None) # Clear current song
+
+    @commands.command(name='pause', help='Pauses the currently playing song.')
+    async def pause(self, ctx: commands.Context):
+        """Pauses the currently playing song."""
+        guild_id = ctx.guild.id
+        self.last_activity[guild_id] = time.time() # Update activity
+
+        if guild_id not in self.voice_clients or not self.voice_clients[guild_id].is_connected():
+            await ctx.send("I'm not connected to a voice channel.")
+            return
+
+        vc = self.voice_clients[guild_id]
+        current = self.current_song.get(guild_id)
+
+        if not current:
+            await ctx.send("I am not playing anything right now.")
+            return
+
+        if not vc.is_playing():
+            # Check if it's already paused
+            if current.get('is_paused'):
+                 await ctx.send("The song is already paused.")
+            else:
+                 await ctx.send("I am not playing anything that can be paused (or it's already paused).")
+            return
+
+        if current.get('is_paused'): # Redundant check given vc.is_playing(), but good for internal state consistency
+            await ctx.send("The song is already paused (internal state).")
+            return
+
+        # Update accumulated duration before pausing
+        current['accumulated_duration'] += (time.time() - current['start_time'])
+        vc.pause()
+        current['is_paused'] = True
+        self.current_song[guild_id] = current # Re-assign to ensure update if it was a copy
+
+        logger.info(f"Paused song in guild {guild_id}: {current['title']}")
+        await ctx.send(f"Paused: {current['title']}")
+
+    @commands.command(name='resume', help='Resumes the currently paused song.')
+    async def resume(self, ctx: commands.Context):
+        """Resumes the currently paused song."""
+        guild_id = ctx.guild.id
+        self.last_activity[guild_id] = time.time() # Update activity
+
+        if guild_id not in self.voice_clients or not self.voice_clients[guild_id].is_connected():
+            await ctx.send("I'm not connected to a voice channel.")
+            return
+
+        vc = self.voice_clients[guild_id]
+        current = self.current_song.get(guild_id)
+
+        if not current:
+            await ctx.send("Nothing is currently loaded to resume.")
+            return
+
+        if not current.get('is_paused'):
+            if vc.is_playing():
+                await ctx.send("The song is already playing.")
+            else: # Not paused and not playing - might be stopped or in a weird state
+                await ctx.send("The song is not paused (it might be stopped or finished).")
+            return
+
+        # At this point, current['is_paused'] should be True.
+        # We also rely on vc.is_paused() to be true, which discord.py should ensure if we used vc.pause()
+        if not vc.is_paused():
+            logger.warning(f"Resume command in guild {guild_id}: Internal state 'is_paused' is True, but vc.is_paused() is False. Proceeding with resume logic.")
+            # This case might indicate a desync, but we try to recover.
+
+        current['start_time'] = time.time() # Reset start time for the new segment
+        vc.resume()
+        current['is_paused'] = False
+        self.current_song[guild_id] = current # Re-assign
+
+        logger.info(f"Resumed song in guild {guild_id}: {current['title']}")
+        await ctx.send(f"Resumed: {current['title']}")
+
 
     @commands.command(name='skip', help='Skips the currently playing song.')
     async def skip(self, ctx: commands.Context):
@@ -481,40 +586,40 @@ class MusicCog(commands.Cog):
                  self.current_song.pop(guild_id, None)
              return
 
-        start_time = current.get('start_time')
+        # current is already current_song_info from self.current_song.get(guild_id)
         total_duration = current.get('duration')
         title = current.get('title', 'Unknown Title')
         webpage_url = current.get('webpage_url', '')
         thumbnail = current.get('thumbnail')
 
         progress_str = ""
-        if start_time and total_duration:
-            # Note: This calculation might be slightly inaccurate if the bot was paused.
-            # Implementing perfect pause handling requires more state tracking.
-            elapsed_seconds = time.time() - start_time
-            # Clamp elapsed time to not exceed total duration
-            elapsed_seconds = max(0, min(elapsed_seconds, total_duration))
+        elapsed_seconds = 0
+        state = "Playing" # Default state
 
+        if current.get('is_paused'):
+            elapsed_seconds = current.get('accumulated_duration', 0)
+            state = "Paused"
+        elif current.get('start_time'): # Playing
+            elapsed_seconds = current.get('accumulated_duration', 0) + (time.time() - current['start_time'])
+            state = "Playing"
+        else: # Should not happen if current is valid and song is loaded
+            progress_str = "Progress unavailable (state error)"
+
+
+        if total_duration: # Ensure total_duration is available for progress calculation
+            elapsed_seconds = max(0, min(elapsed_seconds, total_duration)) # Clamp
             formatted_elapsed = self._format_duration(elapsed_seconds)
             formatted_total = self._format_duration(total_duration)
             progress_str = f"{formatted_elapsed} / {formatted_total}"
 
-             # Simple progress bar (optional)
-            bar_length = 20 # characters
+            bar_length = 20  # characters
             progress_ratio = elapsed_seconds / total_duration if total_duration > 0 else 0
             filled_length = int(bar_length * progress_ratio)
             bar = '█' * filled_length + '░' * (bar_length - filled_length)
             progress_str += f"\n`[{bar}]`"
+        elif progress_str == "": # If not set by state error and no total_duration
+            progress_str = "Duration info missing"
 
-        elif total_duration:
-            formatted_total = self._format_duration(total_duration)
-            progress_str = f"??:?? / {formatted_total}"
-        else:
-            progress_str = "Progress unavailable"
-
-        state = "Playing"
-        if vc.is_paused():
-            state = "Paused" # Add paused state info
 
         embed = discord.Embed(title=f"{state}: {title}", description=f"[{title}]({webpage_url})", color=discord.Color.green() if state == "Playing" else discord.Color.orange())
         if thumbnail:
@@ -523,9 +628,6 @@ class MusicCog(commands.Cog):
         embed.add_field(name="Progress", value=progress_str, inline=False)
 
         await ctx.send(embed=embed)
-        # Log potential inaccuracy if paused
-        if vc.is_paused():
-            logger.debug(f"NP command used while paused in guild {guild_id}. Displayed time may not reflect exact pause point.")
 
     @commands.command(name='remove', help='Removes a song from the queue by its number (use !queue to see numbers).')
     async def remove(self, ctx: commands.Context, position: int):
@@ -793,6 +895,14 @@ if __name__ == "__main__":
     if not DISCORD_TOKEN or DISCORD_TOKEN == "YOUR_BOT_TOKEN_HERE":
         print("CRITICAL ERROR: DISCORD_BOT_TOKEN not found or not set correctly in environment variables/.env file.")
         exit()
+    
+    # --- Check for FFmpeg before starting the bot ---
+    if not check_ffmpeg(FFMPEG_EXECUTABLE):
+        print(f"CRITICAL ERROR: FFmpeg not found or not working (tried path: {FFMPEG_EXECUTABLE}).")
+        print("Music playback will fail. Please install FFmpeg and ensure it's in your system's PATH,")
+        print("or configure the FFMPEG_EXECUTABLE_PATH in your .env file if it's installed elsewhere.")
+        exit() # Exit if FFmpeg check fails
+
     else:
         try:
             logger.info("Starting bot...")
