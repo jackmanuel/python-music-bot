@@ -95,7 +95,7 @@ intents.message_content = True  # Enable message content intent
 intents.voice_states = True     # Enable voice state intent for joining/leaving tracking
 intents.members = True # Needed for stats command
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents, case_insensitive=True)
 
 # --- Music Cog ---
 class MusicCog(commands.Cog):
