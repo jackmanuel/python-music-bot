@@ -12,16 +12,15 @@ import concurrent.futures
 from database_manager import DatabaseManager
 
 # --- Load environment variables from .env file ---
-load_dotenv() # <--- CALL THIS EARLY
+load_dotenv()
 
 # --- Configuration ---
 # Load token securely from environment variable
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 if not DISCORD_TOKEN:
-    # Handle error if token isn't found (important!)
     print("CRITICAL ERROR: DISCORD_BOT_TOKEN not found in environment variables.")
     print("Make sure you have a .env file with DISCORD_BOT_TOKEN=YOUR_TOKEN")
-    exit() # Exit if the token is missing
+    exit()
 
 # --- Load FFmpeg Path from environment variable ---
 # Get the path from .env, defaulting to just "ffmpeg" if the variable is not set.
@@ -112,7 +111,7 @@ class MusicCog(commands.Cog):
         logger.info(f"Initializing ProcessPoolExecutor with max_workers={max_workers}")
         self.process_executor = concurrent.futures.ProcessPoolExecutor(max_workers=max_workers)
 
-        self.db_manager = DatabaseManager(DATABASE_FILE) # Pass the configured DB file path
+        self.db_manager = DatabaseManager(DATABASE_FILE)
 
         self.inactivity_check.start()
 
@@ -174,17 +173,16 @@ class MusicCog(commands.Cog):
             # Prepare song info dictionary
             song_info = {
                 'title': data.get('title', 'Unknown Title'),
-                'url': data['url'], # The crucial stream URL
+                'url': data['url'],
                 'thumbnail': data.get('thumbnail'),
-                'duration': data.get('duration'), # In seconds
-                'webpage_url': data.get('webpage_url', query), # Link back to YT page
+                'duration': data.get('duration'),
+                'webpage_url': data.get('webpage_url', query),
                 'start_time': None # Will be set when playback actually starts
             }
             return song_info
 
         # This catches errors from within run_yt_dlp_extractor or pickling issues
         except Exception as e:
-            # Check if it's the specific pickle error, though the fix should prevent it
             if "Can't pickle" in str(e):
                  logger.critical(f"Pickling error encountered despite fix attempt for '{query}': {e}", exc_info=True)
             # Catch errors from the yt-dlp process itself
@@ -196,7 +194,7 @@ class MusicCog(commands.Cog):
             else:
                 # Log other unexpected exceptions from run_in_executor or within the target function
                 logger.exception(f"Unexpected error during info extraction process for '{query}': {e}")
-            return None # Return None on any extraction error
+            return None
 
 
     def _play_next(self, guild_id, error=None):
@@ -216,7 +214,6 @@ class MusicCog(commands.Cog):
 
         # Get next song info from the queue
         next_song_info = queue.popleft()
-        # Set start time *just before* playback
         next_song_info['start_time'] = time.time()
         self.current_song[guild_id] = next_song_info
         logger.info(f"Playing next song in guild {guild_id}: {next_song_info['title']}")
@@ -570,8 +567,6 @@ class MusicCog(commands.Cog):
             await ctx.send("Invalid input. Please provide a valid number for the song position.")
         else:
             logger.error(f"An unexpected error occurred in the remove command: {error}")
-            # Optional: send a generic error message
-            # await ctx.send("An unexpected error occurred processing the remove command.")
 
     @commands.command(name='clear', help='Clears the song queue.')
     async def clear(self, ctx: commands.Context):
