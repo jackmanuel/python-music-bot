@@ -18,4 +18,4 @@ __pycache__/
 test_ffmpeg.py
 juan_musicbot.py
 *.ipynb
-# etc.
+*.pid
