@@ -3,11 +3,13 @@ from discord.ext import commands, tasks
 import yt_dlp
 import asyncio
 import logging
+import logging.handlers
 import time
 from collections import deque
-import os # For token loading
+import os
 from dotenv import load_dotenv
 import concurrent.futures
+from aiohttp import web
 
 from database_manager import DatabaseManager
 
@@ -27,15 +29,37 @@ if not DISCORD_TOKEN:
 # This allows it to still work if FFmpeg is in the system PATH and the .env variable isn't defined.
 FFMPEG_EXECUTABLE = os.getenv("FFMPEG_EXECUTABLE_PATH", "ffmpeg")
 
-INACTIVITY_TIMEOUT_MINUTES = 30 # Minutes before leaving the voice channel due to inactivity
+INACTIVITY_TIMEOUT_MINUTES = 10 # Minutes before leaving the voice channel due to inactivity
 
 # --- Database Configuration ---
 # Define the path here, or load from .env for more flexibility
 DATABASE_FILE = os.getenv("DATABASE_FILE_PATH", "music_log.db")
 
+LOG_FILE = "music_bot.log"
+SERVER_HOST = "localhost"
+SERVER_PORT = 8000
+
 # --- Basic Logging ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(levelname)s:%(name)s: %(message)s')
 logger = logging.getLogger('discord')
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s')
+
+# File Handler (for the log file)
+# Use a rotating file handler to keep logs for a few days
+# Rotates at midnight, keeps 7 days of backups.
+file_handler = logging.handlers.TimedRotatingFileHandler(
+    filename=LOG_FILE, 
+    when='midnight', 
+    backupCount=7, 
+    encoding='utf-8'
+)
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+
+# Stream Handler (for console output)
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(formatter)
+logger.addHandler(stream_handler)
 
 # Add a log message to confirm which FFmpeg path is being used
 logger.info(f"Using FFmpeg executable located at: {FFMPEG_EXECUTABLE}")
@@ -117,7 +141,6 @@ class MusicCog(commands.Cog):
 
     def cog_unload(self):
         logger.info("Shutting down ProcessPoolExecutor...")
-        # Shutdown executor - True waits, False returns immediately
         self.process_executor.shutdown(wait=True)
         logger.info("Cancelling inactivity check task.")
         self.inactivity_check.cancel()
@@ -773,34 +796,113 @@ class MusicCog(commands.Cog):
 # --- Bot Event Handlers ---
 @bot.event
 async def on_ready():
-    """Called when the bot is ready and connected to Discord."""
+    """
+    Called when the bot is ready and connected to Discord.
+    This can be called multiple times (e.g., on reconnect).
+    """
+    
     logger.info(f'Logged in as {bot.user.name} ({bot.user.id})')
+    logger.info(f'Discord.py Version: {discord.__version__}')
+    logger.info('-------------------')
     logger.info('Bot is ready and online.')
-    # Store the cog instance to potentially unload it later
-    music_cog_instance = MusicCog(bot)
-    await bot.add_cog(music_cog_instance)
-    print(f'Bot {bot.user.name} is ready.')
-    await bot.change_presence(activity=discord.Game(name="Music | !help")) # Set status
+    logger.info('-------------------')
+    
+    # Set the bot's activity/presence
+    await bot.change_presence(activity=discord.Game(name="Music | !help"))
 
+async def handle_logs(request):
+    try:
+        import html
+        with open(LOG_FILE, 'r', encoding='utf-8') as f:
+            log_content = f.read()
+        
+        escaped_log_content = html.escape(log_content)
+        html_body = f'''<!DOCTYPE html>
+<html>
+<head>
+    <title>Music Bot Log</title>
+    <meta http-equiv="refresh" content="5">
+    <style>
+        body {{ font-family: monospace; background-color: #1e1e1e; color: #dcdcdc; }}
+        pre {{ white-space: pre-wrap; word-wrap: break-word; }}
+    </style>
+</head>
+<body>
+    <pre>{escaped_log_content}</pre>
+</body>
+</html>'''
+        return web.Response(text=html_body, content_type='text/html', charset='utf-8')
+    except FileNotFoundError:
+        return web.Response(text="<h1>Log file not found.</h1>", content_type='text/html', status=404)
+    except Exception as e:
+        logger.error(f"Error reading log file for web server: {e}")
+        return web.Response(text=f"<h1>Error reading log file</h1><p>{e}</p>", content_type='text/html', status=500)
 
-# --- Run the Bot ---
-if __name__ == "__main__":
+# This handler triggers the graceful shutdown
+async def handle_shutdown(request):
+    logger.info("Shutdown command received via web interface.")
+    # We create a task to close the bot. This allows us to send the HTTP
+    # response back to the browser before the application fully terminates.
+    asyncio.create_task(bot.close())
+    return web.Response(text="Shutdown signal sent. The bot will now terminate gracefully.")
+
+# This function sets up and starts the aiohttp server
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_logs)
+    app.router.add_get("/shutdown", handle_shutdown)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, SERVER_HOST, SERVER_PORT)
+    
+    # Use a try/finally block to ensure cleanup happens when the task is cancelled.
+    try:
+        await site.start()
+        logger.info(f"--- Log server running on http://{SERVER_HOST}:{SERVER_PORT} ---")
+        logger.info(f"--- View logs at: http://{SERVER_HOST}:{SERVER_PORT} ---")
+        logger.info(f"--- Shutdown bot at: http://{SERVER_HOST}:{SERVER_PORT}/shutdown ---")
+        
+        # This is the key change:
+        # We wait on a new, empty event. This will wait forever until the task
+        # is cancelled from the outside (by the main function's finally block).
+        await asyncio.Event().wait()
+    finally:
+        # This cleanup code will now run correctly when the bot is shutting down.
+        logger.info("Web server is shutting down.")
+        await runner.cleanup()
+
+async def main():
+    # Check for token before starting anything
     if not DISCORD_TOKEN or DISCORD_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        print("CRITICAL ERROR: DISCORD_BOT_TOKEN not found or not set correctly in environment variables/.env file.")
-        exit()
-    else:
+        logger.critical("DISCORD_BOT_TOKEN not found or not set correctly. Halting.")
+        return
+
+    # Create tasks for the bot and the web server to run concurrently
+    async with bot:
+        # Add the cog before starting
+        await bot.add_cog(MusicCog(bot))
+        
+        # Start the web server as a background task
+        web_server_task = asyncio.create_task(start_web_server())
+        
+        logger.info("Starting bot...")
         try:
-            logger.info("Starting bot...")
-            bot.run(DISCORD_TOKEN, log_handler=None) # Use our basicConfig
+            # Start the bot. This will run until bot.close() is called.
+            await bot.start(DISCORD_TOKEN)
         except discord.LoginFailure:
-             logger.error("Login failed: Invalid Discord token provided.")
-             print("CRITICAL ERROR: Invalid Discord Token. Please check your .env file or environment variable.")
-        except KeyboardInterrupt:
-             logger.info("Bot shutdown requested via KeyboardInterrupt.")
-             # Note: bot.close() should ideally be called for clean async shutdown,
-             # but bot.run handles Ctrl+C fairly well by itself, triggering cleanup.
-        except Exception as e:
-             logger.exception(f"Fatal error during bot execution: {e}")
-             print(f"FATAL ERROR: {e}")
+            logger.critical("Login failed: Invalid Discord token provided.")
         finally:
-            logger.info("Bot process finished.")
+            # When bot.start() finishes (due to bot.close()), we ensure other tasks are cancelled.
+            logger.info("Bot has been closed. Cleaning up remaining tasks.")
+            if not web_server_task.done():
+                web_server_task.cancel()
+
+if __name__ == "__main__":
+    try:
+        # Run the main async function
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt received. Shutting down.")
+    finally:
+        logger.info("Application has finished.")
