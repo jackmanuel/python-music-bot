@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands, tasks
 import yt_dlp
+import nacl
 import asyncio
 import logging
 import logging.handlers
@@ -268,6 +269,7 @@ class MusicCog(commands.Cog):
     @commands.command(name='join', help='Joins the voice channel you are currently in.')
     async def join(self, ctx: commands.Context):
         """Joins the invoker's voice channel."""
+        logger.info(f"'join' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
         if ctx.author.voice is None:
             await ctx.send("You are not connected to a voice channel.")
             return
@@ -302,6 +304,7 @@ class MusicCog(commands.Cog):
     @commands.command(name='leave', help='Leaves the current voice channel.')
     async def leave(self, ctx: commands.Context):
         """Disconnects the bot from the voice channel."""
+        logger.info(f"'leave' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
         guild_id = ctx.guild.id
         if guild_id in self.voice_clients and self.voice_clients[guild_id].is_connected():
             vc = self.voice_clients[guild_id]
@@ -319,6 +322,7 @@ class MusicCog(commands.Cog):
     @commands.command(name='play', help='Plays a song from YouTube (URL or search query).')
     async def play(self, ctx: commands.Context, *, query: str):
         """Plays audio from a YouTube URL or search query."""
+        logger.info(f"'play' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id}) with query: {query}")
         guild_id = ctx.guild.id
         self.last_activity[guild_id] = time.time() # Update activity
 
@@ -416,6 +420,7 @@ class MusicCog(commands.Cog):
     @commands.command(name='skip', help='Skips the currently playing song.')
     async def skip(self, ctx: commands.Context):
         """Skips the current song."""
+        logger.info(f"'skip' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
         guild_id = ctx.guild.id
         self.last_activity[guild_id] = time.time() # Update activity
 
@@ -444,6 +449,7 @@ class MusicCog(commands.Cog):
     @commands.command(name='queue', aliases=['q'], help='Shows the current song queue.')
     async def queue(self, ctx: commands.Context):
         """Displays the song queue."""
+        logger.info(f"'queue' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
         guild_id = ctx.guild.id
         self.last_activity[guild_id] = time.time() # Update activity
 
@@ -481,6 +487,7 @@ class MusicCog(commands.Cog):
     @commands.command(name='nowplaying', aliases=['np'], help='Shows the currently playing song and its progress.')
     async def nowplaying(self, ctx: commands.Context):
         """Displays the current song and playback progress."""
+        logger.info(f"'nowplaying' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
         guild_id = ctx.guild.id
         self.last_activity[guild_id] = time.time() # Update activity
 
@@ -550,6 +557,7 @@ class MusicCog(commands.Cog):
     @commands.command(name='remove', help='Removes a song from the queue by its number (use !queue to see numbers).')
     async def remove(self, ctx: commands.Context, position: int):
         """Removes a song from the queue specified by its 1-based position."""
+        logger.info(f"'remove' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id}) with position: {position}")
         guild_id = ctx.guild.id
         self.last_activity[guild_id] = time.time() # Update activity
 
@@ -594,6 +602,7 @@ class MusicCog(commands.Cog):
     @commands.command(name='clear', help='Clears the song queue.')
     async def clear(self, ctx: commands.Context):
         """Clears all songs from the queue."""
+        logger.info(f"'clear' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
         guild_id = ctx.guild.id
         self.last_activity[guild_id] = time.time() # Update activity
 
@@ -803,6 +812,8 @@ async def on_ready():
     
     logger.info(f'Logged in as {bot.user.name} ({bot.user.id})')
     logger.info(f'Discord.py Version: {discord.__version__}')
+    logger.info(f'PyNaCl Version: {nacl.__version__}')
+    logger.info(f'yt-dlp Version: {yt_dlp.version.__version__}')
     logger.info('-------------------')
     logger.info('Bot is ready and online.')
     logger.info('-------------------')
@@ -813,27 +824,25 @@ async def on_ready():
 async def handle_logs(request):
     try:
         import html
+        # Read the log file content
         with open(LOG_FILE, 'r', encoding='utf-8') as f:
             log_content = f.read()
-        
+
+        # Read the HTML template
+        with open('log_viewer.html', 'r', encoding='utf-8') as f:
+            html_template = f.read()
+
+        # Escape the log content and inject it into the template
         escaped_log_content = html.escape(log_content)
-        html_body = f'''<!DOCTYPE html>
-<html>
-<head>
-    <title>Music Bot Log</title>
-    <meta http-equiv="refresh" content="5">
-    <style>
-        body {{ font-family: monospace; background-color: #1e1e1e; color: #dcdcdc; }}
-        pre {{ white-space: pre-wrap; word-wrap: break-word; }}
-    </style>
-</head>
-<body>
-    <pre>{escaped_log_content}</pre>
-</body>
-</html>'''
-        return web.Response(text=html_body, content_type='text/html', charset='utf-8')
-    except FileNotFoundError:
-        return web.Response(text="<h1>Log file not found.</h1>", content_type='text/html', status=404)
+        final_html = html_template.replace('{log_content}', escaped_log_content)
+
+        return web.Response(text=final_html, content_type='text/html', charset='utf-8')
+
+    except FileNotFoundError as e:
+        # Handle either the log file or the template file not being found
+        error_message = f"<h1>File Not Found</h1><p>Could not find: {e.filename}</p>"
+        logger.error(f"Web server error: {e.filename} not found.")
+        return web.Response(text=error_message, content_type='text/html', status=404)
     except Exception as e:
         logger.error(f"Error reading log file for web server: {e}")
         return web.Response(text=f"<h1>Error reading log file</h1><p>{e}</p>", content_type='text/html', status=500)

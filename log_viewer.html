@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Music Bot Log</title>
+    <meta http-equiv="refresh" content="5">
+    <style>
+        html, body { 
+            height: 100%; 
+            margin: 0; 
+            padding: 0; 
+            overflow: hidden; /* Prevents body scrollbars */
+        }
+        body { 
+            font-family: monospace; 
+            background-color: #1e1e1e; 
+            color: #dcdcdc; 
+            display: flex; 
+            flex-direction: column; 
+        }
+        pre { 
+            white-space: pre-wrap; 
+            word-wrap: break-word; 
+            flex-grow: 1;
+            overflow-y: auto; /* Allow scrolling only on the pre element */
+            margin: 0;
+            padding: 10px;
+        }
+    </style>
+</head>
+<body>
+    <pre id="log-content">{log_content}</pre>
+    <script>
+        // This script now targets the 'pre' element for scrolling.
+        var logContent = document.getElementById("log-content");
+        // Set the scroll position to the very bottom.
+        logContent.scrollTop = logContent.scrollHeight;
+    </script>
+</body>
+</html>
