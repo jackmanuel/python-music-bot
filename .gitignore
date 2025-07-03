@@ -11,11 +11,14 @@ __pycache__/
 
 # Optional: Logs, downloaded files, etc.
 *.log
+*.log.*
 *.opus
 *.webm
-*.bat
 *.db
-test_ffmpeg.py
-juan_musicbot.py
 *.ipynb
-# etc.
+*.pid
+*.bat
+
+# But include the essential application runner scripts
+!start_bot.bat
+!stop_bot.bat

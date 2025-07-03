@@ -53,15 +53,23 @@ Follow these steps to get the bot running on a Windows machine.
     FFMPEG_EXECUTABLE_PATH=C:/ffmpeg/bin/ffmpeg.exe
     ```
 
-### 4. Running the Bot
+### 4. Running the Bot (Windows)
 
-Once configured, run the bot from your terminal:
+This project includes simple batch scripts to manage the bot:
 
-```bash
-python music_bot.py
-```
+*   **`start_bot.bat`**: Double-click this file to run the bot in a new terminal window. It will automatically activate the virtual environment and start the Python script.
+*   **`stop_bot.bat`**: Run this script to gracefully shut down the bot. It sends a shutdown command to the bot's web server.
 
-If everything is set up correctly, you'll see a confirmation message in your terminal, and the bot will appear online in your Discord server.
+Simply double-click `start_bot.bat` to get started. A console window will appear showing the bot's live logs.
+
+If you prefer to run it manually, open a Command Prompt, activate the virtual environment (`.venv\Scripts\activate`), and then run `python music_bot.pyw`.
+
+### 5. Web Interface
+
+The bot includes a simple web interface accessible from your browser.
+
+*   **Log Viewer:** Open `http://localhost:8000` in your web browser to see the bot's live log output. This is useful for monitoring activity or diagnosing issues without needing to watch the console.
+*   **Remote Shutdown:** To stop the bot, you can visit `http://localhost:8000/shutdown`. This provides a clean way to terminate the bot process, and it's what the `stop_bot.bat` script uses.
 
 ## Basic Commands
 

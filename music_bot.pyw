@@ -1,13 +1,16 @@
 import discord
 from discord.ext import commands, tasks
 import yt_dlp
+import nacl
 import asyncio
 import logging
+import logging.handlers
 import time
 from collections import deque
-import os # For token loading
+import os
 from dotenv import load_dotenv
 import concurrent.futures
+from aiohttp import web
 
 from database_manager import DatabaseManager
 
@@ -27,15 +30,37 @@ if not DISCORD_TOKEN:
 # This allows it to still work if FFmpeg is in the system PATH and the .env variable isn't defined.
 FFMPEG_EXECUTABLE = os.getenv("FFMPEG_EXECUTABLE_PATH", "ffmpeg")
 
-INACTIVITY_TIMEOUT_MINUTES = 30 # Minutes before leaving the voice channel due to inactivity
+INACTIVITY_TIMEOUT_MINUTES = 10 # Minutes before leaving the voice channel due to inactivity
 
 # --- Database Configuration ---
 # Define the path here, or load from .env for more flexibility
 DATABASE_FILE = os.getenv("DATABASE_FILE_PATH", "music_log.db")
 
+LOG_FILE = "music_bot.log"
+SERVER_HOST = "localhost"
+SERVER_PORT = 8000
+
 # --- Basic Logging ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s:%(levelname)s:%(name)s: %(message)s')
 logger = logging.getLogger('discord')
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s')
+
+# File Handler (for the log file)
+# Use a rotating file handler to keep logs for a few days
+# Rotates at midnight, keeps 7 days of backups.
+file_handler = logging.handlers.TimedRotatingFileHandler(
+    filename=LOG_FILE, 
+    when='midnight', 
+    backupCount=7, 
+    encoding='utf-8'
+)
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+
+# Stream Handler (for console output)
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(formatter)
+logger.addHandler(stream_handler)
 
 # Add a log message to confirm which FFmpeg path is being used
 logger.info(f"Using FFmpeg executable located at: {FFMPEG_EXECUTABLE}")
@@ -117,7 +142,6 @@ class MusicCog(commands.Cog):
 
     def cog_unload(self):
         logger.info("Shutting down ProcessPoolExecutor...")
-        # Shutdown executor - True waits, False returns immediately
         self.process_executor.shutdown(wait=True)
         logger.info("Cancelling inactivity check task.")
         self.inactivity_check.cancel()
@@ -245,6 +269,7 @@ class MusicCog(commands.Cog):
     @commands.command(name='join', help='Joins the voice channel you are currently in.')
     async def join(self, ctx: commands.Context):
         """Joins the invoker's voice channel."""
+        logger.info(f"'join' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
         if ctx.author.voice is None:
             await ctx.send("You are not connected to a voice channel.")
             return
@@ -279,6 +304,7 @@ class MusicCog(commands.Cog):
     @commands.command(name='leave', help='Leaves the current voice channel.')
     async def leave(self, ctx: commands.Context):
         """Disconnects the bot from the voice channel."""
+        logger.info(f"'leave' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
         guild_id = ctx.guild.id
         if guild_id in self.voice_clients and self.voice_clients[guild_id].is_connected():
             vc = self.voice_clients[guild_id]
@@ -296,6 +322,7 @@ class MusicCog(commands.Cog):
     @commands.command(name='play', help='Plays a song from YouTube (URL or search query).')
     async def play(self, ctx: commands.Context, *, query: str):
         """Plays audio from a YouTube URL or search query."""
+        logger.info(f"'play' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id}) with query: {query}")
         guild_id = ctx.guild.id
         self.last_activity[guild_id] = time.time() # Update activity
 
@@ -393,6 +420,7 @@ class MusicCog(commands.Cog):
     @commands.command(name='skip', help='Skips the currently playing song.')
     async def skip(self, ctx: commands.Context):
         """Skips the current song."""
+        logger.info(f"'skip' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
         guild_id = ctx.guild.id
         self.last_activity[guild_id] = time.time() # Update activity
 
@@ -421,6 +449,7 @@ class MusicCog(commands.Cog):
     @commands.command(name='queue', aliases=['q'], help='Shows the current song queue.')
     async def queue(self, ctx: commands.Context):
         """Displays the song queue."""
+        logger.info(f"'queue' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
         guild_id = ctx.guild.id
         self.last_activity[guild_id] = time.time() # Update activity
 
@@ -458,6 +487,7 @@ class MusicCog(commands.Cog):
     @commands.command(name='nowplaying', aliases=['np'], help='Shows the currently playing song and its progress.')
     async def nowplaying(self, ctx: commands.Context):
         """Displays the current song and playback progress."""
+        logger.info(f"'nowplaying' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
         guild_id = ctx.guild.id
         self.last_activity[guild_id] = time.time() # Update activity
 
@@ -527,6 +557,7 @@ class MusicCog(commands.Cog):
     @commands.command(name='remove', help='Removes a song from the queue by its number (use !queue to see numbers).')
     async def remove(self, ctx: commands.Context, position: int):
         """Removes a song from the queue specified by its 1-based position."""
+        logger.info(f"'remove' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id}) with position: {position}")
         guild_id = ctx.guild.id
         self.last_activity[guild_id] = time.time() # Update activity
 
@@ -571,6 +602,7 @@ class MusicCog(commands.Cog):
     @commands.command(name='clear', help='Clears the song queue.')
     async def clear(self, ctx: commands.Context):
         """Clears all songs from the queue."""
+        logger.info(f"'clear' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
         guild_id = ctx.guild.id
         self.last_activity[guild_id] = time.time() # Update activity
 
@@ -583,24 +615,25 @@ class MusicCog(commands.Cog):
         await ctx.send("Song queue cleared!")
         logger.info(f"Queue cleared for guild {guild_id} by command.")
 
-    @commands.command(name='stats', help='Shows song request stats for a user (or yourself).')
+    @commands.command(name='stats', help='Shows song request stats for a user (or yourself) in this server.')
     async def stats(self, ctx: commands.Context, *, member: discord.Member = None):
-        """Shows the total number of songs requested by the specified user or yourself."""
+        """Shows the total number of songs requested by the specified user or yourself in the current server."""
         target_user = member or ctx.author
+        guild_id = ctx.guild.id
 
-        logger.info(f"Stats command invoked by {ctx.author} for user {target_user}")
+        logger.info(f"Stats command invoked by {ctx.author} for user {target_user} in guild {guild_id}")
 
         # --- Fetch stats using the DatabaseManager ---
         try:
-            # Call the method on the db_manager instance
-            request_count = self.db_manager.get_user_stats(target_user.id)
+            # Call the method on the db_manager instance, passing guild_id
+            request_count = self.db_manager.get_user_stats(target_user.id, guild_id)
         except Exception as e:
-             logger.error(f"Error getting stats via DB Manager for user {target_user.id}: {e}", exc_info=True)
+             logger.error(f"Error getting stats via DB Manager for user {target_user.id} in guild {guild_id}: {e}", exc_info=True)
              await ctx.send("An error occurred while fetching stats.")
              return
 
         # Send the result
-        await ctx.send(f"📊 **{target_user.display_name}** has requested **{request_count}** track(s).")
+        await ctx.send(f"📊 **{target_user.display_name}** has requested **{request_count}** track(s) in this server.")
 
     @stats.error
     async def stats_error(self, ctx: commands.Context, error: commands.CommandError):
@@ -610,14 +643,12 @@ class MusicCog(commands.Cog):
             user_input = error.argument
             await ctx.send(
                 f"Could not find a member matching '{user_input}' in this server. Please use their @mention, username#discriminator, or user ID.")
-            # You might want to add self.logger.warning here too
             logger.warning(f"MemberNotFound error in stats command: Input='{user_input}', Guild='{ctx.guild.id}'")
+            error.handled = True
         elif isinstance(error, commands.CommandInvokeError):
             # This catches errors *inside* the stats command logic (e.g., database errors that weren't caught)
             logger.error(f"Error during stats command execution: {error.original}", exc_info=True)
             await ctx.send("An unexpected error occurred while processing the stats command.")
-            # Mark the error as handled if you have a generic cog error handler
-            # error.original.handled = True # Add this if your generic handler shouldn't also report this
         else:
             # Handle other potential errors specific to this command if needed
             logger.error(f"Unhandled error in stats command: {error}", exc_info=True)
@@ -747,7 +778,9 @@ class MusicCog(commands.Cog):
     # --- Cog Error Handling ---
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
         """Handles errors specific to this cog."""
-        # Ignore specific errors handled locally
+        if hasattr(error, 'handled') and error.handled:
+            return
+
         if isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument)) and ctx.command.name == 'remove':
              return # Already handled by remove_error
 
@@ -773,34 +806,105 @@ class MusicCog(commands.Cog):
 # --- Bot Event Handlers ---
 @bot.event
 async def on_ready():
-    """Called when the bot is ready and connected to Discord."""
+    """
+    Called when the bot is ready and connected to Discord.
+    This can be called multiple times (e.g., on reconnect).
+    """
+    
     logger.info(f'Logged in as {bot.user.name} ({bot.user.id})')
+    logger.info(f'Discord.py Version: {discord.__version__}')
+    logger.info(f'PyNaCl Version: {nacl.__version__}')
+    logger.info(f'yt-dlp Version: {yt_dlp.version.__version__}')
+    logger.info('-------------------')
     logger.info('Bot is ready and online.')
-    # Store the cog instance to potentially unload it later
-    music_cog_instance = MusicCog(bot)
-    await bot.add_cog(music_cog_instance)
-    print(f'Bot {bot.user.name} is ready.')
-    await bot.change_presence(activity=discord.Game(name="Music | !help")) # Set status
+    logger.info('-------------------')
+    
+    # Set the bot's activity/presence
+    await bot.change_presence(activity=discord.Game(name="Music | !help"))
 
+async def handle_logs(request):
+    try:
+        import html
+        # Read the log file content
+        with open(LOG_FILE, 'r', encoding='utf-8') as f:
+            log_content = f.read()
 
-# --- Run the Bot ---
-if __name__ == "__main__":
+        # Read the HTML template
+        with open('log_viewer.html', 'r', encoding='utf-8') as f:
+            html_template = f.read()
+
+        # Escape the log content and inject it into the template
+        escaped_log_content = html.escape(log_content)
+        final_html = html_template.replace('{log_content}', escaped_log_content)
+
+        return web.Response(text=final_html, content_type='text/html', charset='utf-8')
+
+    except FileNotFoundError as e:
+        # Handle either the log file or the template file not being found
+        error_message = f"<h1>File Not Found</h1><p>Could not find: {e.filename}</p>"
+        logger.error(f"Web server error: {e.filename} not found.")
+        return web.Response(text=error_message, content_type='text/html', status=404)
+    except Exception as e:
+        logger.error(f"Error reading log file for web server: {e}")
+        return web.Response(text=f"<h1>Error reading log file</h1><p>{e}</p>", content_type='text/html', status=500)
+
+# This handler triggers the graceful shutdown
+async def handle_shutdown(request):
+    logger.info("Shutdown command received via web interface.")
+    # We create a task to close the bot. This allows us to send the HTTP
+    # response back to the browser before the application fully terminates.
+    asyncio.create_task(bot.close())
+    return web.Response(text="Shutdown signal sent. The bot will now terminate gracefully.")
+
+# This function sets up and starts the aiohttp server
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_logs)
+    app.router.add_get("/shutdown", handle_shutdown)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, SERVER_HOST, SERVER_PORT)
+    
+    # Use a try/finally block to ensure cleanup happens when the task is cancelled.
+    try:
+        await site.start()
+        logger.info(f"--- Log server running on http://{SERVER_HOST}:{SERVER_PORT} ---")
+        logger.info(f"--- View logs at: http://{SERVER_HOST}:{SERVER_PORT} ---")
+        logger.info(f"--- Shutdown bot at: http://{SERVER_HOST}:{SERVER_PORT}/shutdown ---")
+        await asyncio.Event().wait()
+    finally:
+        logger.info("Web server is shutting down.")
+        await runner.cleanup()
+
+async def main():
     if not DISCORD_TOKEN or DISCORD_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        print("CRITICAL ERROR: DISCORD_BOT_TOKEN not found or not set correctly in environment variables/.env file.")
-        exit()
-    else:
+        logger.critical("DISCORD_BOT_TOKEN not found or not set correctly. Halting.")
+        return
+
+    # Create tasks for the bot and the web server to run concurrently
+    async with bot:
+        # Add the cog before starting
+        await bot.add_cog(MusicCog(bot))
+        
+        # Start the web server as a background task
+        web_server_task = asyncio.create_task(start_web_server())
+        
+        logger.info("Starting bot...")
         try:
-            logger.info("Starting bot...")
-            bot.run(DISCORD_TOKEN, log_handler=None) # Use our basicConfig
+            await bot.start(DISCORD_TOKEN)
         except discord.LoginFailure:
-             logger.error("Login failed: Invalid Discord token provided.")
-             print("CRITICAL ERROR: Invalid Discord Token. Please check your .env file or environment variable.")
-        except KeyboardInterrupt:
-             logger.info("Bot shutdown requested via KeyboardInterrupt.")
-             # Note: bot.close() should ideally be called for clean async shutdown,
-             # but bot.run handles Ctrl+C fairly well by itself, triggering cleanup.
-        except Exception as e:
-             logger.exception(f"Fatal error during bot execution: {e}")
-             print(f"FATAL ERROR: {e}")
+            logger.critical("Login failed: Invalid Discord token provided.")
         finally:
-            logger.info("Bot process finished.")
+            # When bot.start() finishes (due to bot.close()), we ensure other tasks are cancelled.
+            logger.info("Bot has been closed. Cleaning up remaining tasks.")
+            if not web_server_task.done():
+                web_server_task.cancel()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt received. Shutting down.")
+    finally:
+        logger.info("Application has finished.")

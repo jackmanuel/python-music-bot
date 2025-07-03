@@ -111,32 +111,33 @@ class DatabaseManager:
              if conn:
                  conn.close()
 
-    def get_user_stats(self, user_id: int) -> Union[Optional[int], Any]:
+    def get_user_stats(self, user_id: int, guild_id: int) -> Union[Optional[int], Any]:
         """
-        Gets the total request count for a given user ID.
+        Gets the total request count for a given user ID within a specific guild.
 
         Args:
             user_id: The Discord user ID.
+            guild_id: The Discord Guild ID.
 
         Returns:
-            The total number of requests made by the user, or 0 if an error occurs.
+            The total number of requests made by the user in that guild, or 0 if an error occurs.
         """
         conn = self._get_db_connection()
         if not conn:
-            logger.warning(f"Failed to get DB connection for fetching stats for user {user_id}.")
+            logger.warning(f"Failed to get DB connection for fetching stats for user {user_id} in guild {guild_id}.")
             return 0
 
         count = 0
         try:
             with conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ?", (user_id,))
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ?", (user_id, guild_id,))
                 result = cursor.fetchone()
                 if result:
                     count = result[0]
-                logger.debug(f"Fetched stats for user {user_id}: Count={count}")
+                logger.debug(f"Fetched stats for user {user_id} in guild {guild_id}: Count={count}")
         except sqlite3.Error as e:
-            logger.error(f"Failed to query stats for user {user_id} from {self.db_file}: {e}", exc_info=True)
+            logger.error(f"Failed to query stats for user {user_id} in guild {guild_id} from {self.db_file}: {e}", exc_info=True)
         finally:
             if conn:
                 conn.close()
