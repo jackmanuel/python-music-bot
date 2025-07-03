@@ -699,6 +699,60 @@ class MusicCog(commands.Cog):
 
         await ctx.send(embed=embed)
 
+    @commands.command(name='statslong', help='Shows detailed song request stats for a user.')
+    async def statslong(self, ctx: commands.Context, *, member: discord.Member = None):
+        """Shows detailed statistics for a user."""
+        target_user = member or ctx.author
+        guild_id = ctx.guild.id
+
+        logger.info(f"Statslong command invoked by {ctx.author} for user {target_user} in guild {guild_id}")
+
+        try:
+            stats = self.db_manager.get_user_stats_long(target_user.id, guild_id)
+        except Exception as e:
+            logger.error(f"Error getting long stats via DB Manager for user {target_user.id} in guild {guild_id}: {e}", exc_info=True)
+            await ctx.send("An error occurred while fetching stats.")
+            return
+
+        embed = discord.Embed(
+            title=f"📊 Detailed Stats for {target_user.display_name}",
+            color=discord.Color.blue()
+        )
+        embed.set_thumbnail(url=target_user.display_avatar.url)
+
+        embed.add_field(name="Requests Today", value=stats['today'], inline=True)
+        embed.add_field(name="Requests This Week", value=stats['this_week'], inline=True)
+        embed.add_field(name="Requests This Month", value=stats['this_month'], inline=True)
+        embed.add_field(name="Requests This Year", value=stats['this_year'], inline=True)
+        embed.add_field(name="All Time Requests", value=stats['all_time'], inline=True)
+        embed.add_field(name="Longest Streak", value=f"{stats['longest_streak']} days", inline=True)
+
+        if stats['top_5_requests']:
+            top_requests_str = ""
+            for i, item in enumerate(stats['top_5_requests']):
+                top_requests_str += f"{i+1}. {item['title']} ({item['count']} times)\n"
+            embed.add_field(name="Top 5 Requests", value=top_requests_str, inline=False)
+        else:
+            embed.add_field(name="Top 5 Requests", value="No requests yet!", inline=False)
+
+        await ctx.send(embed=embed)
+
+    @statslong.error
+    async def statslong_error(self, ctx: commands.Context, error: commands.CommandError):
+        """Handles errors for the !statslong command."""
+        if isinstance(error, commands.MemberNotFound):
+            user_input = error.argument
+            await ctx.send(
+                f"Could not find a member matching '{user_input}' in this server. Please use their @mention, username#discriminator, or user ID.")
+            logger.warning(f"MemberNotFound error in statslong command: Input='{user_input}', Guild='{ctx.guild.id}'")
+            error.handled = True
+        elif isinstance(error, commands.CommandInvokeError):
+            logger.error(f"Error during statslong command execution: {error.original}", exc_info=True)
+            await ctx.send("An unexpected error occurred while processing the statslong command.")
+        else:
+            logger.error(f"Unhandled error in statslong command: {error}", exc_info=True)
+            await ctx.send("An error occurred processing the statslong command.")
+
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState,
                                     after: discord.VoiceState):

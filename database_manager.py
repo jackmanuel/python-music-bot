@@ -2,6 +2,7 @@
 import sqlite3
 import logging
 from datetime import datetime
+from datetime import timedelta
 import os # To potentially get db file path from env
 from typing import Union, Optional, List, Dict, Any
 
@@ -201,3 +202,73 @@ class DatabaseManager:
             if conn:
                 conn.close()
         return leaderboard_data
+
+    def get_user_stats_long(self, user_id: int, guild_id: int) -> Dict[str, Any]:
+        """
+        Gets detailed statistics for a given user ID within a specific guild.
+        """
+        stats: Dict[str, Any] = {
+            'today': 0,
+            'this_week': 0,
+            'this_month': 0,
+            'this_year': 0,
+            'all_time': 0,
+            'top_5_requests': [],
+            'longest_streak': 0
+        }
+        conn = self._get_db_connection()
+        if not conn:
+            return stats
+
+        try:
+            with conn:
+                cursor = conn.cursor()
+                now = datetime.utcnow()
+                today_start = now.strftime('%Y-%m-%d')
+                week_start = (now - timedelta(days=now.weekday())).strftime('%Y-%m-%d')
+                month_start = now.strftime('%Y-%m-01')
+                year_start = now.strftime('%Y-01-01')
+
+                # Time-based counts
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(timestamp) = ?", (user_id, guild_id, today_start))
+                stats['today'] = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(timestamp) >= ?", (user_id, guild_id, week_start))
+                stats['this_week'] = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(timestamp) >= ?", (user_id, guild_id, month_start))
+                stats['this_month'] = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(timestamp) >= ?", (user_id, guild_id, year_start))
+                stats['this_year'] = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
+                stats['all_time'] = cursor.fetchone()[0]
+
+                # Top 5 most frequent requests
+                cursor.execute("""
+                    SELECT resolved_title, COUNT(*) as request_count
+                    FROM play_history
+                    WHERE user_id = ? AND guild_id = ?
+                    GROUP BY resolved_title
+                    ORDER BY request_count DESC
+                    LIMIT 5
+                """, (user_id, guild_id))
+                stats['top_5_requests'] = [{'title': row['resolved_title'], 'count': row['request_count']} for row in cursor.fetchall()]
+
+                # Longest request streak
+                cursor.execute("SELECT DISTINCT date(timestamp) FROM play_history WHERE user_id = ? AND guild_id = ? ORDER BY date(timestamp)", (user_id, guild_id))
+                request_dates = [datetime.strptime(row[0], '%Y-%m-%d').date() for row in cursor.fetchall()]
+                if request_dates:
+                    longest_streak = 0
+                    current_streak = 1
+                    for i in range(1, len(request_dates)):
+                        if (request_dates[i] - request_dates[i-1]).days == 1:
+                            current_streak += 1
+                        else:
+                            longest_streak = max(longest_streak, current_streak)
+                            current_streak = 1
+                    stats['longest_streak'] = max(longest_streak, current_streak)
+
+        except sqlite3.Error as e:
+            logger.error(f"Failed to query long stats for user {user_id} in guild {guild_id} from {self.db_file}: {e}", exc_info=True)
+        finally:
+            if conn:
+                conn.close()
+        return stats
