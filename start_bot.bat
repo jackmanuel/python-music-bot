@@ -10,6 +10,20 @@ REM Define the paths to the virtual environment and the main python script.
 set VENV_PYTHONW="%SCRIPT_DIR%.venv\Scripts\pythonw.exe"
 set BOT_SCRIPT="%SCRIPT_DIR%music_bot.pyw"
 
+REM --- Check if the bot is already running by checking the port ---
+REM This looks for ":8000" followed by spaces and then "LISTENING".
+echo Checking if the bot is already running...
+netstat -aon | findstr /R /C:":8000 .*LISTENING" > nul
+if %errorlevel%==0 (
+    echo.
+    echo INFO: The Music Bot appears to be already running.
+    echo A process is already LISTENING on port 8000.
+    echo To restart the bot, please run 'stop_bot.bat' first.
+    echo.
+    pause
+    exit /b
+)
+
 REM --- Check if the required files exist ---
 if not exist %VENV_PYTHONW% (
     echo.

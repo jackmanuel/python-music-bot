@@ -615,24 +615,25 @@ class MusicCog(commands.Cog):
         await ctx.send("Song queue cleared!")
         logger.info(f"Queue cleared for guild {guild_id} by command.")
 
-    @commands.command(name='stats', help='Shows song request stats for a user (or yourself).')
+    @commands.command(name='stats', help='Shows song request stats for a user (or yourself) in this server.')
     async def stats(self, ctx: commands.Context, *, member: discord.Member = None):
-        """Shows the total number of songs requested by the specified user or yourself."""
+        """Shows the total number of songs requested by the specified user or yourself in the current server."""
         target_user = member or ctx.author
+        guild_id = ctx.guild.id
 
-        logger.info(f"Stats command invoked by {ctx.author} for user {target_user}")
+        logger.info(f"Stats command invoked by {ctx.author} for user {target_user} in guild {guild_id}")
 
         # --- Fetch stats using the DatabaseManager ---
         try:
-            # Call the method on the db_manager instance
-            request_count = self.db_manager.get_user_stats(target_user.id)
+            # Call the method on the db_manager instance, passing guild_id
+            request_count = self.db_manager.get_user_stats(target_user.id, guild_id)
         except Exception as e:
-             logger.error(f"Error getting stats via DB Manager for user {target_user.id}: {e}", exc_info=True)
+             logger.error(f"Error getting stats via DB Manager for user {target_user.id} in guild {guild_id}: {e}", exc_info=True)
              await ctx.send("An error occurred while fetching stats.")
              return
 
         # Send the result
-        await ctx.send(f"📊 **{target_user.display_name}** has requested **{request_count}** track(s).")
+        await ctx.send(f"📊 **{target_user.display_name}** has requested **{request_count}** track(s) in this server.")
 
     @stats.error
     async def stats_error(self, ctx: commands.Context, error: commands.CommandError):
@@ -642,14 +643,12 @@ class MusicCog(commands.Cog):
             user_input = error.argument
             await ctx.send(
                 f"Could not find a member matching '{user_input}' in this server. Please use their @mention, username#discriminator, or user ID.")
-            # You might want to add self.logger.warning here too
             logger.warning(f"MemberNotFound error in stats command: Input='{user_input}', Guild='{ctx.guild.id}'")
+            error.handled = True
         elif isinstance(error, commands.CommandInvokeError):
             # This catches errors *inside* the stats command logic (e.g., database errors that weren't caught)
             logger.error(f"Error during stats command execution: {error.original}", exc_info=True)
             await ctx.send("An unexpected error occurred while processing the stats command.")
-            # Mark the error as handled if you have a generic cog error handler
-            # error.original.handled = True # Add this if your generic handler shouldn't also report this
         else:
             # Handle other potential errors specific to this command if needed
             logger.error(f"Unhandled error in stats command: {error}", exc_info=True)
@@ -779,7 +778,9 @@ class MusicCog(commands.Cog):
     # --- Cog Error Handling ---
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
         """Handles errors specific to this cog."""
-        # Ignore specific errors handled locally
+        if hasattr(error, 'handled') and error.handled:
+            return
+
         if isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument)) and ctx.command.name == 'remove':
              return # Already handled by remove_error
 
@@ -871,18 +872,12 @@ async def start_web_server():
         logger.info(f"--- Log server running on http://{SERVER_HOST}:{SERVER_PORT} ---")
         logger.info(f"--- View logs at: http://{SERVER_HOST}:{SERVER_PORT} ---")
         logger.info(f"--- Shutdown bot at: http://{SERVER_HOST}:{SERVER_PORT}/shutdown ---")
-        
-        # This is the key change:
-        # We wait on a new, empty event. This will wait forever until the task
-        # is cancelled from the outside (by the main function's finally block).
         await asyncio.Event().wait()
     finally:
-        # This cleanup code will now run correctly when the bot is shutting down.
         logger.info("Web server is shutting down.")
         await runner.cleanup()
 
 async def main():
-    # Check for token before starting anything
     if not DISCORD_TOKEN or DISCORD_TOKEN == "YOUR_BOT_TOKEN_HERE":
         logger.critical("DISCORD_BOT_TOKEN not found or not set correctly. Halting.")
         return
@@ -897,7 +892,6 @@ async def main():
         
         logger.info("Starting bot...")
         try:
-            # Start the bot. This will run until bot.close() is called.
             await bot.start(DISCORD_TOKEN)
         except discord.LoginFailure:
             logger.critical("Login failed: Invalid Discord token provided.")
@@ -909,7 +903,6 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        # Run the main async function
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt received. Shutting down.")
