@@ -64,7 +64,8 @@ class DatabaseManager:
                         guild_id INTEGER NOT NULL,
                         query TEXT NOT NULL,
                         resolved_title TEXT,
-                        resolved_url TEXT
+                        resolved_url TEXT,
+                        status TEXT NOT NULL DEFAULT 'new'
                     )
                 """)
                 # Add index for faster user lookups
