@@ -45,7 +45,7 @@ class DatabaseManager:
             return None
 
     def _initialize_database(self):
-        """Creates the database table and indices if they don't exist."""
+        """Creates or updates the database table and indices."""
         logger.debug(f"Initializing database table structure in {self.db_file}...")
         conn = self._get_db_connection()
         if not conn:
@@ -54,7 +54,7 @@ class DatabaseManager:
         try:
             with conn:
                 cursor = conn.cursor()
-                # Create the main table
+                # Create the main table if it doesn't exist
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS play_history (
                         request_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,6 +65,7 @@ class DatabaseManager:
                         query TEXT NOT NULL,
                         resolved_title TEXT,
                         resolved_url TEXT,
+                        channel_name TEXT,
                         status TEXT NOT NULL DEFAULT 'new'
                     )
                 """)
@@ -79,7 +80,7 @@ class DatabaseManager:
             if conn:
                 conn.close()
 
-    def log_song_request(self, user_id: int, user_name: str, guild_id: int, query: str, resolved_title: str, resolved_url: Optional[str]):
+    def log_song_request(self, user_id: int, user_name: str, guild_id: int, query: str, resolved_title: str, resolved_url: Optional[str], channel_name: Optional[str]):
         """
         Logs a successfully processed song request to the database.
 
@@ -90,6 +91,7 @@ class DatabaseManager:
             query: The original search query or URL provided by the user.
             resolved_title: The title of the song/video found.
             resolved_url: The webpage URL of the song/video found (e.g., YouTube link). Can be None.
+            channel_name: The name of the YouTube channel.
         """
         resolved_title = resolved_title or "N/A"
         conn = self._get_db_connection()
@@ -103,10 +105,10 @@ class DatabaseManager:
             with conn:
                  cursor = conn.cursor()
                  cursor.execute("""
-                    INSERT INTO play_history (timestamp, user_id, user_name, guild_id, query, resolved_title, resolved_url)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                 """, (timestamp, user_id, user_name, guild_id, query, resolved_title, resolved_url))
-                 logger.debug(f"Logged request to DB: User={user_name}({user_id}), Query='{query}', Title='{resolved_title}'")
+                    INSERT INTO play_history (timestamp, user_id, user_name, guild_id, query, resolved_title, resolved_url, channel_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 """, (timestamp, user_id, user_name, guild_id, query, resolved_title, resolved_url, channel_name))
+                 logger.debug(f"Logged request to DB: User={user_name}({user_id}), Query='{query}', Title='{resolved_title}', Channel='{channel_name}'")
         except sqlite3.Error as e:
              logger.error(f"Failed to log song request to database {self.db_file}: {e}", exc_info=True)
         finally:

@@ -201,6 +201,7 @@ class MusicCog(commands.Cog):
                 'thumbnail': data.get('thumbnail'),
                 'duration': data.get('duration'),
                 'webpage_url': data.get('webpage_url', query),
+                'channel': data.get('channel', 'Unknown Channel'),
                 'start_time': None # Will be set when playback actually starts
             }
             return song_info
@@ -376,7 +377,8 @@ class MusicCog(commands.Cog):
                 guild_id=ctx.guild.id,
                 query=query_stripped,  # Use the original query
                 resolved_title=song_info.get('title', 'N/A'),  # Get title from extracted info
-                resolved_url=song_info.get('webpage_url')  # Get webpage_url
+                resolved_url=song_info.get('webpage_url'),  # Get webpage_url
+                channel_name=song_info.get('channel') # Get channel name
             )
         except Exception as e:
             # Log if the logging itself fails, but don't stop playback
