@@ -34,7 +34,7 @@ INACTIVITY_TIMEOUT_MINUTES = 10 # Minutes before leaving the voice channel due t
 
 # --- Database Configuration ---
 # Define the path here, or load from .env for more flexibility
-DATABASE_FILE = os.getenv("DATABASE_FILE_PATH", "music_log,db")
+DATABASE_FILE = os.getenv("DATABASE_FILE_PATH", "music_log.db")
 
 LOG_FILE = "music_bot.log"
 SERVER_HOST = "localhost"
