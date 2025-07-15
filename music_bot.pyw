@@ -34,7 +34,7 @@ INACTIVITY_TIMEOUT_MINUTES = 10 # Minutes before leaving the voice channel due t
 
 # --- Database Configuration ---
 # Define the path here, or load from .env for more flexibility
-DATABASE_FILE = os.getenv("DATABASE_FILE_PATH", "music_log_test.db")
+DATABASE_FILE = os.getenv("DATABASE_FILE_PATH", "music_log,db")
 
 LOG_FILE = "music_bot.log"
 SERVER_HOST = "localhost"
@@ -228,6 +228,15 @@ class MusicCog(commands.Cog):
             logger.error(f'Player error in guild {guild_id}: {error}')
             # Potentially notify the channel about the error
 
+        # Check if the song was intentionally skipped
+        was_skipped = self.current_song.get(guild_id, {}).get('was_skipped', False)
+        
+        # If the song finished naturally (wasn't skipped), mark it as completed
+        if not was_skipped and self.current_song.get(guild_id):
+            request_id = self.current_song[guild_id].get('request_id')
+            if request_id:
+                self.db_manager.update_song_status(request_id, 'completed')
+
         queue = self.get_queue(guild_id)
         if not queue:
             logger.info(f"Queue empty for guild {guild_id}.")
@@ -243,6 +252,7 @@ class MusicCog(commands.Cog):
         self.current_song[guild_id] = next_song_info
         if 'request_id' in next_song_info:
             self.db_manager.update_play_start_timestamp(next_song_info['request_id'])
+            self.db_manager.update_song_status(next_song_info['request_id'], 'playing')
         logger.info(f"Playing next song in guild {guild_id}: {next_song_info['title']}")
         logger.debug(f"Attempting to play next URL: {next_song_info['url']}")
 
@@ -254,13 +264,10 @@ class MusicCog(commands.Cog):
         vc = self.voice_clients[guild_id]
         try:
             source = discord.FFmpegPCMAudio(next_song_info['url'], **FFMPEG_OPTIONS)
-            # Wrap the source with PCMVolumeTransformer if you want volume control later
-            # source = discord.PCMVolumeTransformer(source, volume=0.5)
-            vc.play(source, after=lambda e: self._play_next(guild_id, e))
+            vc.play(source, after=lambda e: self._play_next(guild_id, error=e))
             self.last_activity[guild_id] = time.time() # Update activity time when song starts
         except discord.ClientException as e:
              logger.error(f"Discord ClientException while trying to play next in {guild_id}: {e}")
-             # Try playing the next one in the queue if available
              self.current_song.pop(guild_id, None) # Clear failed song
              self._play_next(guild_id) # Recursive call to try next song
         except Exception as e:
@@ -403,11 +410,12 @@ class MusicCog(commands.Cog):
             self.current_song[guild_id] = song_info
             if 'request_id' in song_info:
                 self.db_manager.update_play_start_timestamp(song_info['request_id'])
+                self.db_manager.update_song_status(song_info['request_id'], 'playing')
             logger.info(f"Playing immediately in guild {guild_id}: {song_info['title']}")
             logger.debug(f"Attempting to play URL: {song_info['url']}")
             try:
                 source = discord.FFmpegPCMAudio(song_info['url'], **FFMPEG_OPTIONS)
-                vc.play(source, after=lambda e: self._play_next(guild_id, e))
+                vc.play(source, after=lambda e: self._play_next(guild_id, error=e))
 
                 embed = discord.Embed(title="Now Playing", description=f"[{song_info['title']}]({song_info['webpage_url']})", color=discord.Color.green())
                 if song_info.get('thumbnail'):
@@ -449,10 +457,27 @@ class MusicCog(commands.Cog):
              # Try stopping anyway, might be in a weird state
              vc.stop() # Will trigger _play_next if successful
              return
+        
+        # Check playback progress
+        elapsed_time = time.time() - current.get('start_time', 0)
+        duration = current.get('duration', 0)
+        
+        if duration > 0 and (elapsed_time / duration) < 0.6:
+            # Less than 60% played, so mark as skipped
+            if 'request_id' in current:
+                self.db_manager.update_song_status(current['request_id'], 'skipped')
+        else:
+            # 60% or more played, so mark as completed
+            if 'request_id' in current:
+                self.db_manager.update_song_status(current['request_id'], 'completed')
+
 
         logger.info(f"Skipping song in guild {guild_id} by command: {current['title']}")
         await ctx.send(f"Skipping: {current['title']}")
-        vc.stop()  # This will trigger the _play_next callback
+        # Set a flag to indicate a skip was requested.
+        # The 'after' callback (_play_next) will handle the rest.
+        self.current_song[guild_id]['was_skipped'] = True
+        vc.stop()
 
     @commands.command(name='queue', aliases=['q'], help='Shows the current song queue.')
     async def queue(self, ctx: commands.Context):
@@ -584,6 +609,11 @@ class MusicCog(commands.Cog):
                 # though deques support `del queue[index]`
                 removed_song_info = queue[index_to_remove] # Access item by index
                 del queue[index_to_remove] # Deques support deletion by index
+
+                # Update status in DB to 'skipped'
+                if 'request_id' in removed_song_info:
+                    self.db_manager.update_song_status(removed_song_info['request_id'], 'skipped')
+                    logger.info(f"Updated status to 'skipped' for removed song with request_id: {removed_song_info['request_id']}")
 
                 logger.info(f"Removed song at position {position} in guild {guild_id}: {removed_song_info['title']}")
                 await ctx.send(f"Removed song #{position}: **{removed_song_info['title']}**")
@@ -872,6 +902,9 @@ async def on_ready():
     Called when the bot is ready and connected to Discord.
     This can be called multiple times (e.g., on reconnect).
     """
+    # Clean up any orphaned songs from a previous session
+    db_manager = DatabaseManager(DATABASE_FILE)
+    db_manager.cleanup_queued_songs()
     
     logger.info(f'Logged in as {bot.user.name} ({bot.user.id})')
     logger.info(f'Discord.py Version: {discord.__version__}')
