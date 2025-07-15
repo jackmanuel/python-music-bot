@@ -58,7 +58,9 @@ class DatabaseManager:
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS play_history (
                         request_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        timestamp TEXT NOT NULL,
+                        request_timestamp TEXT NOT NULL,
+                        play_start_timestamp TEXT,
+                        duration INTEGER,
                         user_id INTEGER NOT NULL,
                         user_name TEXT NOT NULL,
                         guild_id INTEGER NOT NULL,
@@ -80,7 +82,7 @@ class DatabaseManager:
             if conn:
                 conn.close()
 
-    def log_song_request(self, user_id: int, user_name: str, guild_id: int, query: str, resolved_title: str, resolved_url: Optional[str], channel_name: Optional[str]):
+    def log_song_request(self, user_id: int, user_name: str, guild_id: int, query: str, resolved_title: str, resolved_url: Optional[str], channel_name: Optional[str], duration: int) -> Optional[int]:
         """
         Logs a successfully processed song request to the database.
 
@@ -92,28 +94,64 @@ class DatabaseManager:
             resolved_title: The title of the song/video found.
             resolved_url: The webpage URL of the song/video found (e.g., YouTube link). Can be None.
             channel_name: The name of the YouTube channel.
+            duration: The duration of the track in seconds.
+
+        Returns:
+            The request_id of the newly inserted row, or None if an error occurred.
         """
         resolved_title = resolved_title or "N/A"
         conn = self._get_db_connection()
         if not conn:
             logger.warning("Failed to get DB connection for logging song request.")
-            return # Don't crash if logging fails
+            return None
 
-        timestamp = datetime.utcnow().isoformat()
+        request_timestamp = datetime.utcnow().isoformat()
+        last_row_id = None
 
         try:
             with conn:
-                 cursor = conn.cursor()
-                 cursor.execute("""
-                    INSERT INTO play_history (timestamp, user_id, user_name, guild_id, query, resolved_title, resolved_url, channel_name)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                 """, (timestamp, user_id, user_name, guild_id, query, resolved_title, resolved_url, channel_name))
-                 logger.debug(f"Logged request to DB: User={user_name}({user_id}), Query='{query}', Title='{resolved_title}', Channel='{channel_name}'")
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO play_history (request_timestamp, user_id, user_name, guild_id, query, resolved_title, resolved_url, channel_name, duration)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (request_timestamp, user_id, user_name, guild_id, query, resolved_title, resolved_url, channel_name, duration))
+                last_row_id = cursor.lastrowid
+                logger.debug(f"Logged request to DB: User={user_name}({user_id}), Query='{query}', Title='{resolved_title}', Duration={duration}s, RequestID={last_row_id}")
         except sqlite3.Error as e:
-             logger.error(f"Failed to log song request to database {self.db_file}: {e}", exc_info=True)
+            logger.error(f"Failed to log song request to database {self.db_file}: {e}", exc_info=True)
         finally:
-             if conn:
-                 conn.close()
+            if conn:
+                conn.close()
+        return last_row_id
+
+    def update_play_start_timestamp(self, request_id: int):
+        """
+        Updates the play_start_timestamp for a given request_id to the current time.
+
+        Args:
+            request_id: The ID of the request to update.
+        """
+        conn = self._get_db_connection()
+        if not conn:
+            logger.warning(f"Failed to get DB connection for updating play_start_timestamp for request_id {request_id}.")
+            return
+
+        play_start_timestamp = datetime.utcnow().isoformat()
+
+        try:
+            with conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE play_history
+                    SET play_start_timestamp = ?
+                    WHERE request_id = ?
+                """, (play_start_timestamp, request_id))
+                logger.debug(f"Updated play_start_timestamp for request_id {request_id}")
+        except sqlite3.Error as e:
+            logger.error(f"Failed to update play_start_timestamp for request_id {request_id}: {e}", exc_info=True)
+        finally:
+            if conn:
+                conn.close()
 
     def get_user_stats(self, user_id: int, guild_id: int) -> Union[Optional[int], Any]:
         """
@@ -233,13 +271,13 @@ class DatabaseManager:
                 year_start = now.strftime('%Y-01-01')
 
                 # Time-based counts
-                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(timestamp) = ?", (user_id, guild_id, today_start))
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(request_timestamp) = ?", (user_id, guild_id, today_start))
                 stats['today'] = cursor.fetchone()[0]
-                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(timestamp) >= ?", (user_id, guild_id, week_start))
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(request_timestamp) >= ?", (user_id, guild_id, week_start))
                 stats['this_week'] = cursor.fetchone()[0]
-                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(timestamp) >= ?", (user_id, guild_id, month_start))
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(request_timestamp) >= ?", (user_id, guild_id, month_start))
                 stats['this_month'] = cursor.fetchone()[0]
-                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(timestamp) >= ?", (user_id, guild_id, year_start))
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(request_timestamp) >= ?", (user_id, guild_id, year_start))
                 stats['this_year'] = cursor.fetchone()[0]
                 cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
                 stats['all_time'] = cursor.fetchone()[0]
@@ -256,7 +294,7 @@ class DatabaseManager:
                 stats['top_5_requests'] = [{'title': row['resolved_title'], 'count': row['request_count']} for row in cursor.fetchall()]
 
                 # Longest request streak
-                cursor.execute("SELECT DISTINCT date(timestamp) FROM play_history WHERE user_id = ? AND guild_id = ? ORDER BY date(timestamp)", (user_id, guild_id))
+                cursor.execute("SELECT DISTINCT date(request_timestamp) FROM play_history WHERE user_id = ? AND guild_id = ? ORDER BY date(request_timestamp)", (user_id, guild_id))
                 request_dates = [datetime.strptime(row[0], '%Y-%m-%d').date() for row in cursor.fetchall()]
                 if request_dates:
                     longest_streak = 0

@@ -34,7 +34,7 @@ INACTIVITY_TIMEOUT_MINUTES = 10 # Minutes before leaving the voice channel due t
 
 # --- Database Configuration ---
 # Define the path here, or load from .env for more flexibility
-DATABASE_FILE = os.getenv("DATABASE_FILE_PATH", "music_log.db")
+DATABASE_FILE = os.getenv("DATABASE_FILE_PATH", "music_log_test.db")
 
 LOG_FILE = "music_bot.log"
 SERVER_HOST = "localhost"
@@ -241,6 +241,8 @@ class MusicCog(commands.Cog):
         next_song_info = queue.popleft()
         next_song_info['start_time'] = time.time()
         self.current_song[guild_id] = next_song_info
+        if 'request_id' in next_song_info:
+            self.db_manager.update_play_start_timestamp(next_song_info['request_id'])
         logger.info(f"Playing next song in guild {guild_id}: {next_song_info['title']}")
         logger.debug(f"Attempting to play next URL: {next_song_info['url']}")
 
@@ -371,15 +373,17 @@ class MusicCog(commands.Cog):
 
         try:
             # Call the method on the db_manager instance
-            self.db_manager.log_song_request(
+            request_id = self.db_manager.log_song_request(
                 user_id=ctx.author.id,
-                user_name=str(ctx.author),  # Get username
+                user_name=str(ctx.author),
                 guild_id=ctx.guild.id,
-                query=query_stripped,  # Use the original query
-                resolved_title=song_info.get('title', 'N/A'),  # Get title from extracted info
-                resolved_url=song_info.get('webpage_url'),  # Get webpage_url
-                channel_name=song_info.get('channel') # Get channel name
+                query=query_stripped,
+                resolved_title=song_info.get('title', 'N/A'),
+                resolved_url=song_info.get('webpage_url'),
+                channel_name=song_info.get('channel'),
+                duration=song_info.get('duration')
             )
+            song_info['request_id'] = request_id
         except Exception as e:
             # Log if the logging itself fails, but don't stop playback
             logger.error(f"Error occurred during song request logging via DB Manager: {e}", exc_info=True)
@@ -397,6 +401,8 @@ class MusicCog(commands.Cog):
             # Set start time *just before* playback
             song_info['start_time'] = time.time()
             self.current_song[guild_id] = song_info
+            if 'request_id' in song_info:
+                self.db_manager.update_play_start_timestamp(song_info['request_id'])
             logger.info(f"Playing immediately in guild {guild_id}: {song_info['title']}")
             logger.debug(f"Attempting to play URL: {song_info['url']}")
             try:
