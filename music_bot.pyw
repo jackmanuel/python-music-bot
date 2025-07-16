@@ -33,10 +33,9 @@ FFMPEG_EXECUTABLE = os.getenv("FFMPEG_EXECUTABLE_PATH", "ffmpeg")
 INACTIVITY_TIMEOUT_MINUTES = 10 # Minutes before leaving the voice channel due to inactivity
 
 # --- Database Configuration ---
-# Define the path here, or load from .env for more flexibility
-DATABASE_FILE = os.getenv("DATABASE_FILE_PATH", "music_log.db")
+DATABASE_FILE = os.getenv("DATABASE_FILE_PATH", "database/music_log.db")
+LOG_FILE = os.getenv("LOG_FILE_PATH", "logs/music_bot.log")
 
-LOG_FILE = "music_bot.log"
 SERVER_HOST = "localhost"
 SERVER_PORT = 8000
 
@@ -64,6 +63,8 @@ logger.addHandler(stream_handler)
 
 # Add a log message to confirm which FFmpeg path is being used
 logger.info(f"Using FFmpeg executable located at: {FFMPEG_EXECUTABLE}")
+logger.info(f"Database file located at: {os.path.abspath(DATABASE_FILE)}")
+logger.info(f"Log file located at: {os.path.abspath(LOG_FILE)}")
 
 # --- yt-dlp Options ---
 YDL_OPTIONS = {
