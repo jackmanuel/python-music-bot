@@ -68,7 +68,8 @@ class DatabaseManager:
                         resolved_title TEXT,
                         resolved_url TEXT,
                         channel_name TEXT,
-                        status TEXT NOT NULL DEFAULT 'queued'
+                        play_status TEXT NOT NULL DEFAULT 'queued',
+                        scrobble_status TEXT NOT NULL DEFAULT 'new'
                     )
                 """)
                 # Add index for faster user lookups
@@ -153,9 +154,9 @@ class DatabaseManager:
             if conn:
                 conn.close()
 
-    def update_song_status(self, request_id: int, status: str):
+    def update_play_status(self, request_id: int, status: str):
         """
-        Updates the status for a given request_id.
+        Updates the play_status for a given request_id.
 
         Args:
             request_id: The ID of the request to update.
@@ -171,19 +172,19 @@ class DatabaseManager:
                 cursor = conn.cursor()
                 cursor.execute("""
                     UPDATE play_history
-                    SET status = ?
+                    SET play_status = ?
                     WHERE request_id = ?
                 """, (status, request_id))
-                logger.debug(f"Updated status to '{status}' for request_id {request_id}")
+                logger.debug(f"Updated play_status to '{status}' for request_id {request_id}")
         except sqlite3.Error as e:
-            logger.error(f"Failed to update status for request_id {request_id}: {e}", exc_info=True)
+            logger.error(f"Failed to update play_status for request_id {request_id}: {e}", exc_info=True)
         finally:
             if conn:
                 conn.close()
 
     def cleanup_queued_songs(self):
         """
-        Changes the status of any 'queued' or 'playing' songs to 'skipped'.
+        Changes the play_status of any 'queued' or 'playing' songs to 'skipped'.
         This is intended to be run on bot startup to handle orphaned songs.
         """
         conn = self._get_db_connection()
@@ -196,13 +197,13 @@ class DatabaseManager:
                 cursor = conn.cursor()
                 cursor.execute("""
                     UPDATE play_history
-                    SET status = 'skipped'
-                    WHERE status IN ('queued', 'playing')
+                    SET play_status = 'skipped'
+                    WHERE play_status IN ('queued', 'playing')
                 """)
                 # rowcount will tell us how many rows were affected
                 changed_rows = cursor.rowcount
                 if changed_rows > 0:
-                    logger.info(f"Cleaned up {changed_rows} orphaned 'queued' or 'playing' song(s), setting status to 'skipped'.")
+                    logger.info(f"Cleaned up {changed_rows} orphaned 'queued' or 'playing' song(s), setting play_status to 'skipped'.")
                 else:
                     logger.info("No orphaned 'queued' or 'playing' songs found to clean up.")
         except sqlite3.Error as e:

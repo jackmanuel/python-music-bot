@@ -235,7 +235,7 @@ class MusicCog(commands.Cog):
         if not was_skipped and self.current_song.get(guild_id):
             request_id = self.current_song[guild_id].get('request_id')
             if request_id:
-                self.db_manager.update_song_status(request_id, 'completed')
+                self.db_manager.update_play_status(request_id, 'completed')
 
         queue = self.get_queue(guild_id)
         if not queue:
@@ -252,7 +252,7 @@ class MusicCog(commands.Cog):
         self.current_song[guild_id] = next_song_info
         if 'request_id' in next_song_info:
             self.db_manager.update_play_start_timestamp(next_song_info['request_id'])
-            self.db_manager.update_song_status(next_song_info['request_id'], 'playing')
+            self.db_manager.update_play_status(next_song_info['request_id'], 'playing')
         logger.info(f"Playing next song in guild {guild_id}: {next_song_info['title']}")
         logger.debug(f"Attempting to play next URL: {next_song_info['url']}")
 
@@ -410,7 +410,7 @@ class MusicCog(commands.Cog):
             self.current_song[guild_id] = song_info
             if 'request_id' in song_info:
                 self.db_manager.update_play_start_timestamp(song_info['request_id'])
-                self.db_manager.update_song_status(song_info['request_id'], 'playing')
+                self.db_manager.update_play_status(song_info['request_id'], 'playing')
             logger.info(f"Playing immediately in guild {guild_id}: {song_info['title']}")
             logger.debug(f"Attempting to play URL: {song_info['url']}")
             try:
@@ -465,11 +465,11 @@ class MusicCog(commands.Cog):
         if duration > 0 and (elapsed_time / duration) < 0.6:
             # Less than 60% played, so mark as skipped
             if 'request_id' in current:
-                self.db_manager.update_song_status(current['request_id'], 'skipped')
+                self.db_manager.update_play_status(current['request_id'], 'skipped')
         else:
             # 60% or more played, so mark as completed
             if 'request_id' in current:
-                self.db_manager.update_song_status(current['request_id'], 'completed')
+                self.db_manager.update_play_status(current['request_id'], 'completed')
 
 
         logger.info(f"Skipping song in guild {guild_id} by command: {current['title']}")
@@ -612,7 +612,7 @@ class MusicCog(commands.Cog):
 
                 # Update status in DB to 'skipped'
                 if 'request_id' in removed_song_info:
-                    self.db_manager.update_song_status(removed_song_info['request_id'], 'skipped')
+                    self.db_manager.update_play_status(removed_song_info['request_id'], 'skipped')
                     logger.info(f"Updated status to 'skipped' for removed song with request_id: {removed_song_info['request_id']}")
 
                 logger.info(f"Removed song at position {position} in guild {guild_id}: {removed_song_info['title']}")
