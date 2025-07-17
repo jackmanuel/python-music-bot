@@ -1,9 +1,9 @@
 # database_manager.py
 import sqlite3
 import logging
-from datetime import datetime
-from datetime import timedelta
-import os # To potentially get db file path from env
+import time
+from datetime import datetime, timezone, timedelta
+import os
 from typing import Union, Optional, List, Dict, Any
 
 # Configure logging for this module
@@ -106,7 +106,7 @@ class DatabaseManager:
             logger.warning("Failed to get DB connection for logging song request.")
             return None
 
-        request_timestamp = datetime.utcnow().isoformat()
+        request_timestamp = datetime.now(timezone.utc).isoformat()
         last_row_id = None
 
         try:
@@ -137,7 +137,7 @@ class DatabaseManager:
             logger.warning(f"Failed to get DB connection for updating play_start_timestamp for request_id {request_id}.")
             return
 
-        play_start_timestamp = datetime.utcnow().isoformat()
+        play_start_timestamp = datetime.now(timezone.utc).isoformat()
 
         try:
             with conn:
@@ -232,8 +232,11 @@ class DatabaseManager:
         try:
             with conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ?", (user_id, guild_id,))
+                start_time = time.time()
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND play_status = 'completed'", (user_id, guild_id))
                 result = cursor.fetchone()
+                end_time = time.time()
+                logger.info(f"User stats query took {(end_time - start_time) * 1000:.2f}ms")
                 if result:
                     count = result[0]
                 logger.debug(f"Fetched stats for user {user_id} in guild {guild_id}: Count={count}")
@@ -271,18 +274,21 @@ class DatabaseManager:
             # Proceed only if conn is not None
             with conn:
                 cursor = conn.cursor()
+                start_time = time.time()
                 cursor.execute("""
                             SELECT
                                 user_id,
                                 user_name,
                                 COUNT(request_id) as request_count
                             FROM play_history
-                            WHERE guild_id = ?  -- Filter by the specific guild_id
-                            GROUP BY user_id    -- Group within that guild
+                            WHERE guild_id = ? AND play_status = 'completed'
+                            GROUP BY user_id
                             ORDER BY request_count DESC
                             LIMIT ?
-                        """, (guild_id, limit)) # Pass guild_id first, then limit
-                results: List[sqlite3.Row] = cursor.fetchall()  # Hint fetchall result type
+                        """, (guild_id, limit))
+                results: List[sqlite3.Row] = cursor.fetchall()
+                end_time = time.time()
+                logger.info(f"Leaderboard query took {(end_time - start_time) * 1000:.2f}ms")
 
                 for row in results:
                     # Ensure keys match column names/aliases from the query
@@ -297,7 +303,7 @@ class DatabaseManager:
                 logger.debug(f"Fetched leaderboard stats: Found {len(leaderboard_data)} users.")
         except sqlite3.Error as e:
             logger.error(f"Failed to query leaderboard stats from {self.db_file}: {e}", exc_info=True)
-            return []  # Return empty list on error
+            return []
         finally:
             if conn:
                 conn.close()
@@ -323,29 +329,30 @@ class DatabaseManager:
         try:
             with conn:
                 cursor = conn.cursor()
-                now = datetime.utcnow()
+                now = datetime.now(timezone.utc)
                 today_start = now.strftime('%Y-%m-%d')
                 week_start = (now - timedelta(days=now.weekday())).strftime('%Y-%m-%d')
                 month_start = now.strftime('%Y-%m-01')
                 year_start = now.strftime('%Y-01-01')
 
                 # Time-based counts
-                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(request_timestamp) = ?", (user_id, guild_id, today_start))
+                start_time = time.time()
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(request_timestamp) = ? AND play_status = 'completed'", (user_id, guild_id, today_start))
                 stats['today'] = cursor.fetchone()[0]
-                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(request_timestamp) >= ?", (user_id, guild_id, week_start))
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(request_timestamp) >= ? AND play_status = 'completed'", (user_id, guild_id, week_start))
                 stats['this_week'] = cursor.fetchone()[0]
-                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(request_timestamp) >= ?", (user_id, guild_id, month_start))
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(request_timestamp) >= ? AND play_status = 'completed'", (user_id, guild_id, month_start))
                 stats['this_month'] = cursor.fetchone()[0]
-                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(request_timestamp) >= ?", (user_id, guild_id, year_start))
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(request_timestamp) >= ? AND play_status = 'completed'", (user_id, guild_id, year_start))
                 stats['this_year'] = cursor.fetchone()[0]
-                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ?", (user_id, guild_id))
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND play_status = 'completed'", (user_id, guild_id))
                 stats['all_time'] = cursor.fetchone()[0]
 
                 # Top 5 most frequent requests
                 cursor.execute("""
                     SELECT resolved_title, COUNT(*) as request_count
                     FROM play_history
-                    WHERE user_id = ? AND guild_id = ?
+                    WHERE user_id = ? AND guild_id = ? AND play_status = 'completed'
                     GROUP BY resolved_title
                     ORDER BY request_count DESC
                     LIMIT 5
@@ -353,7 +360,7 @@ class DatabaseManager:
                 stats['top_5_requests'] = [{'title': row['resolved_title'], 'count': row['request_count']} for row in cursor.fetchall()]
 
                 # Longest request streak
-                cursor.execute("SELECT DISTINCT date(request_timestamp) FROM play_history WHERE user_id = ? AND guild_id = ? ORDER BY date(request_timestamp)", (user_id, guild_id))
+                cursor.execute("SELECT DISTINCT date(request_timestamp) FROM play_history WHERE user_id = ? AND guild_id = ? AND play_status = 'completed' ORDER BY date(request_timestamp)", (user_id, guild_id))
                 request_dates = [datetime.strptime(row[0], '%Y-%m-%d').date() for row in cursor.fetchall()]
                 if request_dates:
                     longest_streak = 0
@@ -365,6 +372,9 @@ class DatabaseManager:
                             longest_streak = max(longest_streak, current_streak)
                             current_streak = 1
                     stats['longest_streak'] = max(longest_streak, current_streak)
+                
+                end_time = time.time()
+                logger.info(f"Long stats queries took {(end_time - start_time) * 1000:.2f}ms")
 
         except sqlite3.Error as e:
             logger.error(f"Failed to query long stats for user {user_id} in guild {guild_id} from {self.db_file}: {e}", exc_info=True)

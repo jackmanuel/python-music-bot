@@ -4,7 +4,6 @@ import yt_dlp
 import nacl
 import asyncio
 import logging
-import logging.handlers
 import time
 from collections import deque
 import os
@@ -13,6 +12,7 @@ import concurrent.futures
 from aiohttp import web
 
 from database_manager import DatabaseManager
+from logging_config import setup_logging
 
 # --- Load environment variables from .env file ---
 load_dotenv()
@@ -40,26 +40,8 @@ SERVER_HOST = "localhost"
 SERVER_PORT = 8000
 
 # --- Basic Logging ---
-logger = logging.getLogger('discord')
-logger.setLevel(logging.INFO)
-formatter = logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s')
-
-# File Handler (for the log file)
-# Use a rotating file handler to keep logs for a few days
-# Rotates at midnight, keeps 7 days of backups.
-file_handler = logging.handlers.TimedRotatingFileHandler(
-    filename=LOG_FILE, 
-    when='midnight', 
-    backupCount=7, 
-    encoding='utf-8'
-)
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
-
-# Stream Handler (for console output)
-stream_handler = logging.StreamHandler()
-stream_handler.setFormatter(formatter)
-logger.addHandler(stream_handler)
+setup_logging(log_file_path=LOG_FILE)
+logger = logging.getLogger(__name__)
 
 # Add a log message to confirm which FFmpeg path is being used
 logger.info(f"Using FFmpeg executable located at: {FFMPEG_EXECUTABLE}")
