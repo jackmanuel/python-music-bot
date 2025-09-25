@@ -30,7 +30,7 @@ if not DISCORD_TOKEN:
 # This allows it to still work if FFmpeg is in the system PATH and the .env variable isn't defined.
 FFMPEG_EXECUTABLE = os.getenv("FFMPEG_EXECUTABLE_PATH", "ffmpeg")
 
-INACTIVITY_TIMEOUT_MINUTES = 10 # Minutes before leaving the voice channel due to inactivity
+INACTIVITY_TIMEOUT_MINUTES = 20 # Minutes before leaving the voice channel due to inactivity
 
 # --- Database Configuration ---
 DATABASE_FILE = os.getenv("DATABASE_FILE_PATH", "database/music_log.db")
@@ -51,8 +51,6 @@ logger.info(f"Log file located at: {os.path.abspath(LOG_FILE)}")
 # --- yt-dlp Options ---
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
-    'extractaudio': True,
-    'audioformat': 'opus',
     'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
     'restrictfilenames': True,
     'noplaylist': True,
@@ -61,8 +59,9 @@ YDL_OPTIONS = {
     'logtostderr': False,
     'quiet': True,
     'no_warnings': True,
-    'default_search': 'ytsearch',
+    'default_search': 'ytsearch1:',
     'source_address': '0.0.0.0',
+    'subtitles': False,
 }
 
 # --- FFmpeg Options ---
@@ -903,9 +902,12 @@ async def on_ready():
 async def handle_logs(request):
     try:
         import html
-        # Read the log file content
+        from collections import deque
+
+        # Read only the most recent lines of the log file
         with open(LOG_FILE, 'r', encoding='utf-8') as f:
-            log_content = f.read()
+            last_lines = deque(f, 500)
+            log_content = "".join(last_lines)
 
         # Read the HTML template
         with open('log_viewer.html', 'r', encoding='utf-8') as f:
