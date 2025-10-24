@@ -57,8 +57,8 @@ YDL_OPTIONS = {
     'nocheckcertificate': True,
     'ignoreerrors': False,
     'logtostderr': False,
-    'quiet': True,
-    'no_warnings': True,
+    'quiet': False,
+    'no_warnings': False,
     'default_search': 'ytsearch1:',
     'source_address': '0.0.0.0',
     'subtitles': False,
@@ -82,9 +82,17 @@ def run_yt_dlp_extractor(query):
     Needs YDL_OPTIONS to be globally accessible or passed explicitly if refactored.
     """
     try:
+        # Create a custom logger for yt-dlp to capture its output
+        ydl_logger = logging.getLogger('yt-dlp')
+        ydl_logger.setLevel(logging.DEBUG)
+        
+        # Create a copy of YDL_OPTIONS to avoid modifying the global one
+        ydl_options = YDL_OPTIONS.copy()
+        ydl_options['logger'] = ydl_logger
+        
         # NOTE: Creates a new YoutubeDL instance each time in the new process.
         # This is generally fine for ProcessPoolExecutor.
-        with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
+        with yt_dlp.YoutubeDL(ydl_options) as ydl:
             data = ydl.extract_info(query, download=False)
         return data
     except Exception as e:

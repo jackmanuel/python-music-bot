@@ -46,6 +46,10 @@ def setup_logging(log_file_path: str = "logs/music_bot.log", level: int = loggin
     # --- Set Specific Log Levels for Noisy Libraries ---
     # This prevents the console from being spammed by web server access logs
     logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
+    
+    # Ensure yt-dlp messages are captured at appropriate levels
+    # Set to INFO to see important messages but not debug spam
+    logging.getLogger('yt-dlp').setLevel(logging.INFO)
 
     # Initial log to confirm setup
     logging.info(f"Logging configured. Log level: {logging.getLevelName(level)}. Log file: {os.path.abspath(log_file_path)}")
