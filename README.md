@@ -3,11 +3,11 @@
 
 # Discord Music Bot
 
-A straightforward Discord music bot built with `discord.py`. It plays audio from YouTube, manages a queue, and tracks user song request statistics.
+A straightforward Discord music bot built with `discord.py`. It plays audio from YouTube and SoundCloud, manages a queue, and tracks user song request statistics.
 
 ## Features
 
-*   Play music from YouTube via search or direct URL.
+*   Play music from YouTube and SoundCloud via search or direct URL.
 *   Full queue management: add, view (`!q`), skip, remove, and clear.
 *   Show what's currently playing (`!np`).
 *   User stats: see how many songs you (`!stats`) or others have requested.
@@ -74,7 +74,7 @@ The bot includes a simple web interface accessible from your browser.
 ## Basic Commands
 
 *   `!join`: Bot joins your voice channel.
-*   `!play <song name or URL>`: Searches for and plays a song.
+*   `!play <song name or URL>`: Searches YouTube or plays from YouTube/SoundCloud URLs.
 *   `!skip`: Skips the current song.
 *   `!queue` or `!q`: Shows the current song queue.
 *   `!np`: Shows the currently playing song and its progress.

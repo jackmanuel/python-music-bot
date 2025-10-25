@@ -319,9 +319,9 @@ class MusicCog(commands.Cog):
         else:
             await ctx.send("I am not currently in a voice channel.")
 
-    @commands.command(name='play', help='Plays a song from YouTube (URL or search query).')
+    @commands.command(name='play', help='Plays a song from YouTube or SoundCloud (URL or search query).')
     async def play(self, ctx: commands.Context, *, query: str):
-        """Plays audio from a YouTube URL or search query."""
+        """Plays audio from a YouTube or SoundCloud URL, or searches YouTube for a query."""
         logger.info(f"'play' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id}) with query: {query}")
         guild_id = ctx.guild.id
         self.last_activity[guild_id] = time.time() # Update activity
@@ -351,12 +351,17 @@ class MusicCog(commands.Cog):
         # Check if the query looks like a URL (starts with http)
         query_stripped = query.strip()  # Use strip() to handle leading/trailing spaces
         is_url = query_stripped.startswith("http://") or query_stripped.startswith("https://")
+        is_soundcloud = is_url and "soundcloud.com" in query_stripped.lower()
 
         # Extract song info - Send status message conditionally
         processing_message = None  # Keep track of the message if we send one
         if is_url:
-            processing_message = await ctx.send(f"Processing URL...")
-            logger.info(f"Processing direct URL: {query_stripped}")
+            if is_soundcloud:
+                processing_message = await ctx.send(f"Processing SoundCloud URL...")
+                logger.info(f"Processing SoundCloud URL: {query_stripped}")
+            else:
+                processing_message = await ctx.send(f"Processing URL...")
+                logger.info(f"Processing direct URL: {query_stripped}")
             pass  # No searching message needed
         else:
             processing_message = await ctx.send(f"Searching for `{query_stripped}`...")
