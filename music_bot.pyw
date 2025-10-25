@@ -32,6 +32,11 @@ FFMPEG_EXECUTABLE = os.getenv("FFMPEG_EXECUTABLE_PATH", "ffmpeg")
 
 INACTIVITY_TIMEOUT_MINUTES = 20 # Minutes before leaving the voice channel due to inactivity
 
+# --- Song Duration Limit ---
+# Maximum song duration in seconds (default: 30 minutes = 1800 seconds)
+# Songs longer than this will be rejected to save performance and disk space
+MAX_SONG_DURATION_SECONDS = int(os.getenv("MAX_SONG_DURATION_SECONDS", "1800"))
+
 # --- Database Configuration ---
 DATABASE_FILE = os.getenv("DATABASE_FILE_PATH", "database/music_log.db")
 LOG_FILE = os.getenv("LOG_FILE_PATH", "logs/music_bot.log")
@@ -48,10 +53,28 @@ logger.info(f"Using FFmpeg executable located at: {FFMPEG_EXECUTABLE}")
 logger.info(f"Database file located at: {os.path.abspath(DATABASE_FILE)}")
 logger.info(f"Log file located at: {os.path.abspath(LOG_FILE)}")
 
+# Format the duration for logging
+def format_duration_log(seconds: float) -> str:
+    """Formats seconds into MM:SS or HH:MM:SS for logging."""
+    if seconds is None or not isinstance(seconds, (int, float)):
+        return "??:??"
+    try:
+        seconds = int(seconds)
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours > 0:
+            return f"{hours:d}:{minutes:02d}:{seconds:02d}"
+        else:
+            return f"{minutes:02d}:{seconds:02d}"
+    except Exception:
+         return "??:??"
+
+logger.info(f"Maximum song duration limit: {MAX_SONG_DURATION_SECONDS} seconds ({format_duration_log(MAX_SONG_DURATION_SECONDS)})")
+
 # --- yt-dlp Options ---
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
-    'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
+    'outtmpl': 'song_cache/%(extractor)s-%(id)s.%(ext)s',
     'restrictfilenames': True,
     'noplaylist': True,
     'nocheckcertificate': True,
@@ -62,6 +85,12 @@ YDL_OPTIONS = {
     'default_search': 'ytsearch1:',
     'source_address': '0.0.0.0',
     'subtitles': False,
+    'postprocessors': [{
+        'key': 'FFmpegExtractAudio',
+        'preferredcodec': 'opus',
+        'preferredquality': '192',
+    }],
+    'writethumbnail': False,
 }
 
 # --- FFmpeg Options ---
@@ -76,7 +105,7 @@ FFMPEG_OPTIONS = {
     'executable': FFMPEG_EXECUTABLE
 }
 
-def run_yt_dlp_extractor(query):
+def run_yt_dlp_extractor(query, download=False):
     """
     Runs yt-dlp extract_info in a way that's pickleable for multiprocessing.
     Needs YDL_OPTIONS to be globally accessible or passed explicitly if refactored.
@@ -93,7 +122,7 @@ def run_yt_dlp_extractor(query):
         # NOTE: Creates a new YoutubeDL instance each time in the new process.
         # This is generally fine for ProcessPoolExecutor.
         with yt_dlp.YoutubeDL(ydl_options) as ydl:
-            data = ydl.extract_info(query, download=False)
+            data = ydl.extract_info(query, download=download)
         return data
     except Exception as e:
         # Log or handle errors occurring *within* the worker process if necessary
@@ -102,6 +131,39 @@ def run_yt_dlp_extractor(query):
         # Re-raise or return an indicator if needed, but often letting the
         # executor raise it in the main thread is sufficient.
         raise # Re-raise the exception to be caught by the await call
+
+def run_yt_dlp_search(query):
+    """
+    Runs yt-dlp to search for a video without downloading.
+    This is optimized for just getting video information.
+    """
+    try:
+        # Create a custom logger for yt-dlp to capture its output
+        ydl_logger = logging.getLogger('yt-dlp')
+        ydl_logger.setLevel(logging.DEBUG)
+        
+        # Create search-specific options - no download, no post-processing
+        search_options = {
+            'format': 'bestaudio/best',
+            'restrictfilenames': True,
+            'noplaylist': True,
+            'nocheckcertificate': True,
+            'ignoreerrors': False,
+            'logtostderr': False,
+            'quiet': False,
+            'no_warnings': False,
+            'default_search': 'ytsearch1:',
+            'source_address': '0.0.0.0',
+            'logger': ydl_logger,
+            # No postprocessors for search only
+        }
+        
+        with yt_dlp.YoutubeDL(search_options) as ydl:
+            data = ydl.extract_info(query, download=False)
+        return data
+    except Exception as e:
+        logger.error(f"Error within run_yt_dlp_search for '{query}': {e}")
+        raise
 
 
 # --- Bot Class ---
@@ -120,6 +182,7 @@ class MusicCog(commands.Cog):
         self.current_song = {} # Dictionary to hold current song info {guild_id: song_info}
         self.voice_clients = {} # Dictionary to hold voice clients {guild_id: voice_client}
         self.last_activity = {} # Dictionary to track last activity time {guild_id: timestamp}
+        self.song_cache = {}  # Dictionary to hold cached song info {youtube_id: file_path}
         # Use 1 quarter the cores, minimum 1
         cpu_cores = os.cpu_count() or 1
         max_workers = max(1, cpu_cores // 4)
@@ -127,6 +190,9 @@ class MusicCog(commands.Cog):
         self.process_executor = concurrent.futures.ProcessPoolExecutor(max_workers=max_workers)
 
         self.db_manager = DatabaseManager(DATABASE_FILE)
+        
+        # Load existing cache
+        self._load_cache()
 
         self.inactivity_check.start()
 
@@ -135,6 +201,33 @@ class MusicCog(commands.Cog):
         self.process_executor.shutdown(wait=True)
         logger.info("Cancelling inactivity check task.")
         self.inactivity_check.cancel()
+    
+    def _load_cache(self):
+        """Load existing song cache from the song_cache directory."""
+        cache_dir = "song_cache"
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir)
+            return
+            
+        logger.info("Loading existing song cache...")
+        for filename in os.listdir(cache_dir):
+            if filename.endswith(".opus"):
+                # Extract YouTube ID from filename (format: extractor-id.opus)
+                parts = filename.split('-')
+                if len(parts) >= 2:
+                    youtube_id = parts[1].replace('.opus', '')
+                    file_path = os.path.join(cache_dir, filename)
+                    self.song_cache[youtube_id] = file_path
+        logger.info(f"Loaded {len(self.song_cache)} songs from cache")
+    
+    def _get_cached_file(self, youtube_id):
+        """Check if a song is cached and return the file path."""
+        return self.song_cache.get(youtube_id)
+    
+    def _add_to_cache(self, youtube_id, file_path):
+        """Add a song to the cache."""
+        self.song_cache[youtube_id] = file_path
+        logger.info(f"Added song {youtube_id} to cache")
 
     def get_queue(self, guild_id):
         """Gets the queue for a guild, creating it if it doesn't exist."""
@@ -159,44 +252,122 @@ class MusicCog(commands.Cog):
              return "??:??"
 
 
-    async def _extract_info(self, query):
+    async def _extract_info(self, query, download=False):
         """Extracts info using yt-dlp in an executor to avoid blocking."""
         loop = asyncio.get_event_loop()
         try:
-            logger.debug(f"Submitting yt-dlp extraction for '{query}' to process pool.")
-            # Call the top-level function, passing the query as an argument
+            # First, search for the video without downloading
+            logger.debug(f"Submitting yt-dlp search for '{query}' to process pool.")
             data = await loop.run_in_executor(
                 self.process_executor,
-                run_yt_dlp_extractor,  # Pass the function itself
-                query  # Pass the argument(s) for the function
+                run_yt_dlp_search,
+                query
             )
-            logger.debug(f"Successfully retrieved data for '{query}' from process pool.")
+            logger.debug(f"Successfully retrieved search data for '{query}' from process pool.")
 
             if not data:
-                logger.warning(f"Extraction returned no data for '{query}'.")
+                logger.warning(f"Search returned no data for '{query}'.")
                 return None
 
             if 'entries' in data:
                 logger.info(f"Found multiple entries for '{query}', using first result.")
                 data = data['entries'][0]
 
-            if 'url' not in data:
-                logger.warning(f"Could not extract stream URL for '{query}'. Missing 'url' key. Data: {data}")
+            # Check song duration against the maximum limit
+            duration = data.get('duration')
+            if duration and duration > MAX_SONG_DURATION_SECONDS:
+                logger.warning(f"Song '{data.get('title', 'Unknown')}' exceeds maximum duration limit "
+                             f"({duration}s > {MAX_SONG_DURATION_SECONDS}s)")
+                return {
+                    'error': 'duration_exceeded',
+                    'title': data.get('title', 'Unknown Title'),
+                    'duration': duration,
+                    'max_duration': MAX_SONG_DURATION_SECONDS,
+                    'webpage_url': data.get('webpage_url', query)
+                }
+
+            # Get YouTube ID for caching
+            youtube_id = data.get('id')
+            if not youtube_id:
+                logger.warning(f"Could not extract YouTube ID for '{query}'.")
                 return None
 
-            # Prepare song info dictionary
+            # Check if already cached
+            cached_file = self._get_cached_file(youtube_id)
+            if cached_file and os.path.exists(cached_file):
+                logger.info(f"Using cached file for '{query}': {cached_file}")
+                # Prepare song info dictionary with cached file
+                song_info = {
+                    'title': data.get('title', 'Unknown Title'),
+                    'url': cached_file,  # Use local file path instead of stream URL
+                    'thumbnail': data.get('thumbnail'),
+                    'duration': data.get('duration'),
+                    'webpage_url': data.get('webpage_url', query),
+                    'channel': data.get('channel', 'Unknown Channel'),
+                    'youtube_id': youtube_id,
+                    'start_time': None,
+                    'is_cached': True
+                }
+                return song_info
+
+            # If not cached and download is requested, download the file
+            if download:
+                logger.info(f"Downloading '{query}' to cache...")
+                # Now we use the full extractor with download=True
+                downloaded_data = await loop.run_in_executor(
+                    self.process_executor,
+                    run_yt_dlp_extractor,
+                    query,
+                    True
+                )
+                
+                # Find the downloaded file
+                expected_filename = f"youtube-{youtube_id}.opus"
+                file_path = os.path.join("song_cache", expected_filename)
+                
+                if os.path.exists(file_path):
+                    self._add_to_cache(youtube_id, file_path)
+                    logger.info(f"Successfully downloaded and cached '{query}'")
+                    # Use the downloaded file instead of trying to get a stream URL
+                    # Preserve metadata from the initial search (data) and merge with any new info from download
+                    # Use the original search data for metadata, but fall back to download data if needed
+                    song_info = {
+                        'title': data.get('title') or downloaded_data.get('title', 'Unknown Title'),
+                        'url': file_path,  # Use local file path
+                        'thumbnail': data.get('thumbnail') or downloaded_data.get('thumbnail'),
+                        'duration': data.get('duration') or downloaded_data.get('duration'),
+                        'webpage_url': data.get('webpage_url') or downloaded_data.get('webpage_url', query),
+                        'channel': data.get('channel') or downloaded_data.get('channel', 'Unknown Channel'),
+                        'youtube_id': youtube_id,
+                        'start_time': None,  # Will be set when playback actually starts
+                        'is_cached': True
+                    }
+                    return song_info
+                else:
+                    logger.error(f"Downloaded file not found at expected path: {file_path}")
+                    return None
+
+            # Prepare song info dictionary for non-downloaded songs
+            # For non-cached songs, we need to get the stream URL
+            stream_url = data.get('url')
+            if not stream_url:
+                logger.warning(f"No stream URL available for '{query}'")
+                return None
+                
             song_info = {
                 'title': data.get('title', 'Unknown Title'),
-                'url': data['url'],
+                'url': stream_url,
                 'thumbnail': data.get('thumbnail'),
                 'duration': data.get('duration'),
                 'webpage_url': data.get('webpage_url', query),
                 'channel': data.get('channel', 'Unknown Channel'),
-                'start_time': None # Will be set when playback actually starts
+                'youtube_id': youtube_id,
+                'start_time': None,
+                'is_cached': False
             }
             return song_info
 
-        # This catches errors from within run_yt_dlp_extractor or pickling issues
+        # This catches errors from within run_yt_dlp_search or run_yt_dlp_extractor
         except Exception as e:
             if "Can't pickle" in str(e):
                  logger.critical(f"Pickling error encountered despite fix attempt for '{query}': {e}", exc_info=True)
@@ -253,7 +424,16 @@ class MusicCog(commands.Cog):
 
         vc = self.voice_clients[guild_id]
         try:
-            source = discord.FFmpegPCMAudio(next_song_info['url'], **FFMPEG_OPTIONS)
+            # Use different FFmpeg options for local files vs streaming
+            if next_song_info.get('is_cached', False):
+                local_ffmpeg_options = {
+                    'options': '-vn',
+                    'executable': FFMPEG_EXECUTABLE
+                }
+                source = discord.FFmpegPCMAudio(next_song_info['url'], **local_ffmpeg_options)
+            else:
+                source = discord.FFmpegPCMAudio(next_song_info['url'], **FFMPEG_OPTIONS)
+            
             vc.play(source, after=lambda e: self._play_next(guild_id, error=e))
             self.last_activity[guild_id] = time.time() # Update activity time when song starts
         except discord.ClientException as e:
@@ -366,12 +546,45 @@ class MusicCog(commands.Cog):
         else:
             processing_message = await ctx.send(f"Searching for `{query_stripped}`...")
 
-        # Pass the stripped query to the extractor
-        song_info = await self._extract_info(query_stripped)
+        # First, search for the video without downloading to check cache
+        song_info = await self._extract_info(query_stripped, download=False)
 
         if not song_info:
             await ctx.send(f"Could not find or process `{query}`. Please check the URL or search terms.")
             return
+        
+        # Check if song exceeds maximum duration limit
+        if isinstance(song_info, dict) and song_info.get('error') == 'duration_exceeded':
+            title = song_info.get('title', 'Unknown Title')
+            duration_str = self._format_duration(song_info.get('duration'))
+            max_duration_str = self._format_duration(song_info.get('max_duration'))
+            
+            embed = discord.Embed(
+                title="⚠️ Song Too Long",
+                description=f"**{title}** exceeds the maximum duration limit.",
+                color=discord.Color.red()
+            )
+            embed.add_field(name="Duration", value=duration_str, inline=True)
+            embed.add_field(name="Maximum Allowed", value=max_duration_str, inline=True)
+            embed.add_field(name="URL", value=f"[Link]({song_info.get('webpage_url')})", inline=False)
+            embed.set_footer(text="This limit helps save performance and disk space.")
+            
+            await ctx.send(embed=embed)
+            return
+
+        # If not cached, download the song
+        if not song_info.get('is_cached', False):
+            if processing_message:
+                # Use the title from the initial search if available
+                title = song_info.get('title', 'Unknown Title')
+                await processing_message.edit(content=f"Downloading **{title}**...")
+            
+            # Extract info again with download=True to actually download the file
+            song_info = await self._extract_info(query_stripped, download=True)
+            
+            if not song_info:
+                await ctx.send(f"Failed to download `{query}`. Please try again.")
+                return
 
         try:
             # Call the method on the db_manager instance
@@ -398,6 +611,10 @@ class MusicCog(commands.Cog):
              if song_info.get('thumbnail'):
                  embed.set_thumbnail(url=song_info['thumbnail'])
              embed.add_field(name="Position in queue", value=len(queue))
+             if song_info.get('is_cached', False):
+                 embed.add_field(name="Source", value="📁 Cached", inline=True)
+             else:
+                 embed.add_field(name="Source", value="🌐 Stream", inline=True)
              await ctx.send(embed=embed)
         else:
             # Set start time *just before* playback
@@ -409,7 +626,16 @@ class MusicCog(commands.Cog):
             logger.info(f"Playing immediately in guild {guild_id}: {song_info['title']}")
             logger.debug(f"Attempting to play URL: {song_info['url']}")
             try:
-                source = discord.FFmpegPCMAudio(song_info['url'], **FFMPEG_OPTIONS)
+                # Use different FFmpeg options for local files vs streaming
+                if song_info.get('is_cached', False):
+                    local_ffmpeg_options = {
+                        'options': '-vn',
+                        'executable': FFMPEG_EXECUTABLE
+                    }
+                    source = discord.FFmpegPCMAudio(song_info['url'], **local_ffmpeg_options)
+                else:
+                    source = discord.FFmpegPCMAudio(song_info['url'], **FFMPEG_OPTIONS)
+                
                 vc.play(source, after=lambda e: self._play_next(guild_id, error=e))
 
                 embed = discord.Embed(title="Now Playing", description=f"[{song_info['title']}]({song_info['webpage_url']})", color=discord.Color.green())
@@ -417,6 +643,10 @@ class MusicCog(commands.Cog):
                     embed.set_thumbnail(url=song_info['thumbnail'])
                 if song_info.get('duration'):
                     embed.add_field(name="Duration", value=self._format_duration(song_info['duration']))
+                if song_info.get('is_cached', False):
+                    embed.add_field(name="Source", value="📁 Cached", inline=True)
+                else:
+                    embed.add_field(name="Source", value="🌐 Stream", inline=True)
                 await ctx.send(embed=embed)
 
             except discord.ClientException as e:
@@ -455,9 +685,10 @@ class MusicCog(commands.Cog):
         
         # Check playback progress
         elapsed_time = time.time() - current.get('start_time', 0)
-        duration = current.get('duration', 0)
+        duration = current.get('duration')
         
-        if duration > 0 and (elapsed_time / duration) < 0.6:
+        # Handle case where duration is None
+        if duration is None or duration <= 0 or (elapsed_time / duration) < 0.6:
             # Less than 60% played, so mark as skipped
             if 'request_id' in current:
                 self.db_manager.update_play_status(current['request_id'], 'skipped')
@@ -785,6 +1016,84 @@ class MusicCog(commands.Cog):
         else:
             logger.error(f"Unhandled error in statslong command: {error}", exc_info=True)
             await ctx.send("An error occurred processing the statslong command.")
+
+    @commands.command(name='cache', help='Shows information about the song cache.')
+    async def cache_info(self, ctx: commands.Context):
+        """Displays information about the song cache."""
+        logger.info(f"'cache' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
+        self.last_activity[ctx.guild.id] = time.time() # Update activity
+        
+        cache_size = len(self.song_cache)
+        total_size_mb = 0
+        
+        # Calculate total cache size
+        for file_path in self.song_cache.values():
+            if os.path.exists(file_path):
+                total_size_mb += os.path.getsize(file_path) / (1024 * 1024)  # Convert to MB
+        
+        embed = discord.Embed(
+            title="📁 Song Cache Information",
+            color=discord.Color.blue()
+        )
+        
+        embed.add_field(name="Cached Songs", value=f"{cache_size} songs", inline=True)
+        embed.add_field(name="Total Size", value=f"{total_size_mb:.2f} MB", inline=True)
+        embed.add_field(name="Cache Directory", value="song_cache/", inline=False)
+        
+        await ctx.send(embed=embed)
+    
+    @commands.command(name='clearcache', help='Clears the song cache (admin only).')
+    @commands.has_permissions(administrator=True)
+    async def clear_cache(self, ctx: commands.Context):
+        """Clears all cached songs."""
+        logger.info(f"'clearcache' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
+        
+        # Check for admin permission
+        if not ctx.author.guild_permissions.administrator:
+            await ctx.send("You need administrator permissions to use this command.")
+            return
+        
+        # Confirm with the user
+        confirm_msg = await ctx.send("⚠️ This will delete all cached songs. Are you sure? Type `confirm` to proceed.")
+        
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == "confirm"
+        
+        try:
+            # Wait for confirmation
+            await self.bot.wait_for('message', check=check, timeout=30.0)
+            
+            # Clear the cache
+            cache_dir = "song_cache"
+            if os.path.exists(cache_dir):
+                for filename in os.listdir(cache_dir):
+                    if filename.endswith(".opus"):
+                        file_path = os.path.join(cache_dir, filename)
+                        try:
+                            os.remove(file_path)
+                            logger.info(f"Deleted cached file: {file_path}")
+                        except Exception as e:
+                            logger.error(f"Failed to delete {file_path}: {e}")
+            
+            # Reset the cache dictionary
+            self.song_cache.clear()
+            
+            await ctx.send("✅ Song cache has been cleared.")
+            logger.info(f"Song cache cleared by {ctx.author} in guild {ctx.guild.id}")
+            
+        except asyncio.TimeoutError:
+            await ctx.send("Cache clear cancelled - no confirmation received.")
+        except Exception as e:
+            await ctx.send(f"An error occurred while clearing the cache: {e}")
+            logger.exception(f"Error in clear_cache command: {e}")
+    
+    @clear_cache.error
+    async def clear_cache_error(self, ctx: commands.Context, error: commands.CommandError):
+        """Handles errors for the clearcache command."""
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.send("You need administrator permissions to use this command.")
+        else:
+            logger.error(f"An unexpected error occurred in the clear_cache command: {error}")
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState,

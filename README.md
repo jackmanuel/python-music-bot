@@ -13,6 +13,7 @@ A straightforward Discord music bot built with `discord.py`. It plays audio from
 *   User stats: see how many songs you (`!stats`) or others have requested.
 *   Server leaderboard (`!lb`) for top requesters.
 *   Automatically disconnects from empty or inactive voice channels.
+*   Song duration limit to prevent excessively long downloads (default: 30 minutes).
 
 ## Setup for Windows
 
@@ -48,10 +49,16 @@ Follow these steps to get the bot running on a Windows machine.
     ```
 
 3.  **(Optional) Configure FFmpeg Path:** If you did not add FFmpeg to your system PATH, you must add the following line to your `.env` file. **Remember to use forward slashes (`/`) for the path.**
-    ```dotenv
-    # Example path, change it to match your own
-    FFMPEG_EXECUTABLE_PATH=C:/ffmpeg/bin/ffmpeg.exe
-    ```
+```dotenv
+# Example path, change it to match your own
+FFMPEG_EXECUTABLE_PATH=C:/ffmpeg/bin/ffmpeg.exe
+```
+
+4.  **(Optional) Configure Maximum Song Duration:** By default, the bot will reject songs longer than 30 minutes to save performance and disk space. You can customize this limit by adding the following line to your `.env` file (value in seconds):
+```dotenv
+# Example: Set maximum duration to 45 minutes (2700 seconds)
+MAX_SONG_DURATION_SECONDS=2700
+```
 
 ### 4. Running the Bot (Windows)
 
