@@ -306,7 +306,8 @@ class MusicCog(commands.Cog):
                     'channel': data.get('channel', 'Unknown Channel'),
                     'youtube_id': youtube_id,
                     'start_time': None,
-                    'is_cached': True
+                    'is_cached': True,
+                    'was_previously_cached': True  # Track if it was already cached
                 }
                 return song_info
 
@@ -340,7 +341,8 @@ class MusicCog(commands.Cog):
                         'channel': data.get('channel') or downloaded_data.get('channel', 'Unknown Channel'),
                         'youtube_id': youtube_id,
                         'start_time': None,  # Will be set when playback actually starts
-                        'is_cached': True
+                        'is_cached': True,
+                        'was_previously_cached': False  # Track if it was newly downloaded
                     }
                     return song_info
                 else:
@@ -612,7 +614,10 @@ class MusicCog(commands.Cog):
                  embed.set_thumbnail(url=song_info['thumbnail'])
              embed.add_field(name="Position in queue", value=len(queue))
              if song_info.get('is_cached', False):
-                 embed.add_field(name="Source", value="📁 Cached", inline=True)
+                 if song_info.get('was_previously_cached', False):
+                     embed.add_field(name="Source", value="📁 Cached", inline=True)
+                 else:
+                     embed.add_field(name="Source", value="⬇️ New Download", inline=True)
              else:
                  embed.add_field(name="Source", value="🌐 Stream", inline=True)
              await ctx.send(embed=embed)
@@ -644,7 +649,10 @@ class MusicCog(commands.Cog):
                 if song_info.get('duration'):
                     embed.add_field(name="Duration", value=self._format_duration(song_info['duration']))
                 if song_info.get('is_cached', False):
-                    embed.add_field(name="Source", value="📁 Cached", inline=True)
+                    if song_info.get('was_previously_cached', False):
+                        embed.add_field(name="Source", value="📁 Cached", inline=True)
+                    else:
+                        embed.add_field(name="Source", value="⬇️ New Download", inline=True)
                 else:
                     embed.add_field(name="Source", value="🌐 Stream", inline=True)
                 await ctx.send(embed=embed)
