@@ -1032,21 +1032,42 @@ class MusicCog(commands.Cog):
         self.last_activity[ctx.guild.id] = time.time() # Update activity
         
         cache_size = len(self.song_cache)
-        total_size_mb = 0
+        file_sizes_mb = []
         
-        # Calculate total cache size
+        # Calculate file sizes for statistics
         for file_path in self.song_cache.values():
             if os.path.exists(file_path):
-                total_size_mb += os.path.getsize(file_path) / (1024 * 1024)  # Convert to MB
+                try:
+                    file_size_mb = os.path.getsize(file_path) / (1024 * 1024)  # Convert to MB
+                    file_sizes_mb.append(file_size_mb)
+                except (OSError, IOError):
+                    # Skip files that can't be accessed
+                    continue
+        
+        # Calculate statistics
+        if file_sizes_mb:
+            total_size_mb = sum(file_sizes_mb)
+            average_size_mb = total_size_mb / len(file_sizes_mb)
+            largest_size_mb = max(file_sizes_mb)
+        else:
+            total_size_mb = 0
+            average_size_mb = 0
+            largest_size_mb = 0
         
         embed = discord.Embed(
             title="📁 Song Cache Information",
             color=discord.Color.blue()
         )
-        
+
         embed.add_field(name="Cached Songs", value=f"{cache_size} songs", inline=True)
         embed.add_field(name="Total Size", value=f"{total_size_mb:.2f} MB", inline=True)
-        embed.add_field(name="Cache Directory", value="song_cache/", inline=False)
+
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
+
+        embed.add_field(name="Average Size", value=f"{average_size_mb:.2f} MB", inline=True)
+        embed.add_field(name="Largest File", value=f"{largest_size_mb:.2f} MB", inline=True)
+
+        embed.add_field(name="\u200b", value="\u200b", inline=True)
         
         await ctx.send(embed=embed)
     
