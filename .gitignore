@@ -6,14 +6,18 @@ venv/
 *.pyc
 __pycache__/
 
-# Secrets file - DO NOT COMMIT!
+# Secrets file
 .env
 
-# Optional: Logs, downloaded files, etc.
+# Logs, downloaded files, etc.
 *.log
 *.log.*
 *.opus
 *.webm
+*.m4a
+*.mp3
+*.aac
+*.wav
 *.db
 *.ipynb
 *.pid

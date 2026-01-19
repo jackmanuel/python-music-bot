@@ -29,6 +29,7 @@ if not DISCORD_TOKEN:
 # Get the path from .env, defaulting to just "ffmpeg" if the variable is not set.
 # This allows it to still work if FFmpeg is in the system PATH and the .env variable isn't defined.
 FFMPEG_EXECUTABLE = os.getenv("FFMPEG_EXECUTABLE_PATH", "ffmpeg")
+FFMPEG_VOLUME = "0.5"
 
 INACTIVITY_TIMEOUT_MINUTES = 20 # Minutes before leaving the voice channel due to inactivity
 
@@ -85,12 +86,8 @@ YDL_OPTIONS = {
     'default_search': 'ytsearch1:',
     'source_address': '0.0.0.0',
     'subtitles': False,
-    'postprocessors': [{
-        'key': 'FFmpegExtractAudio',
-        'preferredcodec': 'opus',
-        'preferredquality': '192',
-    }],
     'writethumbnail': False,
+    'remote_components': 'ejs:github'
 }
 
 # --- FFmpeg Options ---
@@ -101,9 +98,10 @@ YDL_OPTIONS = {
 # -vn: Disable video processing
 FFMPEG_OPTIONS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn',
+    'options': '-vn -f s16le -ar 48000 -ac 2',
     'executable': FFMPEG_EXECUTABLE
 }
+
 
 def run_yt_dlp_extractor(query, download=False):
     """
@@ -210,14 +208,26 @@ class MusicCog(commands.Cog):
             return
             
         logger.info("Loading existing song cache...")
+        # Supported audio extensions
+        valid_extensions = ('.opus', '.m4a', '.webm', '.mp3', '.aac', '.wav')
+        
         for filename in os.listdir(cache_dir):
-            if filename.endswith(".opus"):
-                # Extract YouTube ID from filename (format: extractor-id.opus)
-                parts = filename.split('-')
-                if len(parts) >= 2:
-                    youtube_id = parts[1].replace('.opus', '')
-                    file_path = os.path.join(cache_dir, filename)
-                    self.song_cache[youtube_id] = file_path
+            if filename.endswith(valid_extensions):
+                # Extract YouTube ID from filename (format: extractor-id.ext)
+                # We need to handle IDs that might have hyphens, so split by extension first
+                try:
+                    name_part = os.path.splitext(filename)[0]
+                    # Assuming format extractor-id
+                    parts = name_part.split('-')
+                    if len(parts) >= 2:
+                        # Join all parts except the first one (extractor) to get the ID
+                        # This handles IDs with hyphens better
+                        youtube_id = "-".join(parts[1:]) 
+                        file_path = os.path.join(cache_dir, filename)
+                        self.song_cache[youtube_id] = file_path
+                except Exception as e:
+                    logger.error(f"Error loading cache file {filename}: {e}")
+                    
         logger.info(f"Loaded {len(self.song_cache)} songs from cache")
     
     def _get_cached_file(self, youtube_id):
@@ -314,7 +324,6 @@ class MusicCog(commands.Cog):
             # If not cached and download is requested, download the file
             if download:
                 logger.info(f"Downloading '{query}' to cache...")
-                # Now we use the full extractor with download=True
                 downloaded_data = await loop.run_in_executor(
                     self.process_executor,
                     run_yt_dlp_extractor,
@@ -322,52 +331,63 @@ class MusicCog(commands.Cog):
                     True
                 )
                 
-                # Find the downloaded file
-                expected_filename = f"youtube-{youtube_id}.opus"
-                file_path = os.path.join("song_cache", expected_filename)
+                # Dynamic filename check
+                # yt-dlp usually returns the 'ext' it decided on in downloaded_data
+                ext = downloaded_data.get('ext', 'opus') # Default fallback
                 
-                if os.path.exists(file_path):
-                    self._add_to_cache(youtube_id, file_path)
-                    logger.info(f"Successfully downloaded and cached '{query}'")
-                    # Use the downloaded file instead of trying to get a stream URL
-                    # Preserve metadata from the initial search (data) and merge with any new info from download
-                    # Use the original search data for metadata, but fall back to download data if needed
+                # Construct the expected filename pattern
+                # Note: yt-dlp might sanitize the filename, but our outtmpl is simple
+                expected_filename_base = f"youtube-{youtube_id}"
+                
+                found_file = None
+                # Check for the file with the expected extension, or scan for it
+                potential_path = os.path.join("song_cache", f"{expected_filename_base}.{ext}")
+                
+                if os.path.exists(potential_path):
+                    found_file = potential_path
+                else:
+                    # Fallback: Scan directory for the file we just downloaded
+                    for fname in os.listdir("song_cache"):
+                        if fname.startswith(expected_filename_base):
+                            found_file = os.path.join("song_cache", fname)
+                            break
+                
+                if found_file:
+                    self._add_to_cache(youtube_id, found_file)
+                    logger.info(f"Successfully downloaded and cached '{query}' at {found_file}")
+                    
                     song_info = {
                         'title': data.get('title') or downloaded_data.get('title', 'Unknown Title'),
-                        'url': file_path,  # Use local file path
+                        'url': found_file,
                         'thumbnail': data.get('thumbnail') or downloaded_data.get('thumbnail'),
                         'duration': data.get('duration') or downloaded_data.get('duration'),
                         'webpage_url': data.get('webpage_url') or downloaded_data.get('webpage_url', query),
                         'channel': data.get('channel') or downloaded_data.get('channel', 'Unknown Channel'),
                         'youtube_id': youtube_id,
-                        'start_time': None,  # Will be set when playback actually starts
+                        'start_time': None,
                         'is_cached': True,
-                        'was_previously_cached': False  # Track if it was newly downloaded
+                        'was_previously_cached': False
                     }
                     return song_info
                 else:
-                    logger.error(f"Downloaded file not found at expected path: {file_path}")
+                    logger.error(f"Downloaded file not found. Expected base: {expected_filename_base}")
                     return None
-
-            # Prepare song info dictionary for non-downloaded songs
-            # For non-cached songs, we need to get the stream URL
-            stream_url = data.get('url')
-            if not stream_url:
-                logger.warning(f"No stream URL available for '{query}'")
-                return None
-                
-            song_info = {
-                'title': data.get('title', 'Unknown Title'),
-                'url': stream_url,
-                'thumbnail': data.get('thumbnail'),
-                'duration': data.get('duration'),
-                'webpage_url': data.get('webpage_url', query),
-                'channel': data.get('channel', 'Unknown Channel'),
-                'youtube_id': youtube_id,
-                'start_time': None,
-                'is_cached': False
-            }
-            return song_info
+            else:
+                # If not cached and download is NOT requested, return metadata
+                # This allows the caller (play command) to know what song was found
+                # and then decide to download it.
+                return {
+                    'title': data.get('title', 'Unknown Title'),
+                    'url': data.get('url'), # Might be None, but that's okay for now
+                    'thumbnail': data.get('thumbnail'),
+                    'duration': data.get('duration'),
+                    'webpage_url': data.get('webpage_url', query),
+                    'channel': data.get('channel', 'Unknown Channel'),
+                    'youtube_id': youtube_id,
+                    'start_time': None,
+                    'is_cached': False,
+                    'was_previously_cached': False
+                }
 
         # This catches errors from within run_yt_dlp_search or run_yt_dlp_extractor
         except Exception as e:
@@ -429,7 +449,8 @@ class MusicCog(commands.Cog):
             # Use different FFmpeg options for local files vs streaming
             if next_song_info.get('is_cached', False):
                 local_ffmpeg_options = {
-                    'options': '-vn',
+                    'before_options': '-re -nostdin -loglevel error',
+                    'options': f'-vn -f s16le -ar 48000 -ac 2 -af "volume={FFMPEG_VOLUME}"',
                     'executable': FFMPEG_EXECUTABLE
                 }
                 source = discord.FFmpegPCMAudio(next_song_info['url'], **local_ffmpeg_options)
@@ -634,7 +655,8 @@ class MusicCog(commands.Cog):
                 # Use different FFmpeg options for local files vs streaming
                 if song_info.get('is_cached', False):
                     local_ffmpeg_options = {
-                        'options': '-vn',
+                        'before_options': '-re -nostdin -loglevel error',
+                        'options': f'-vn -f s16le -ar 48000 -ac 2 -af "volume={FFMPEG_VOLUME}"',
                         'executable': FFMPEG_EXECUTABLE
                     }
                     source = discord.FFmpegPCMAudio(song_info['url'], **local_ffmpeg_options)
