@@ -186,6 +186,9 @@ class MusicCog(commands.Cog):
         max_workers = max(1, cpu_cores // 4)
         logger.info(f"Initializing ProcessPoolExecutor with max_workers={max_workers}")
         self.process_executor = concurrent.futures.ProcessPoolExecutor(max_workers=max_workers)
+        # ThreadPoolExecutor for download operations - avoids pickling issues with yt-dlp
+        # when downloading (especially for SoundCloud, where yt-dlp returns unpickleable objects)
+        self.thread_executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
 
         self.db_manager = DatabaseManager(DATABASE_FILE)
         
@@ -197,6 +200,8 @@ class MusicCog(commands.Cog):
     def cog_unload(self):
         logger.info("Shutting down ProcessPoolExecutor...")
         self.process_executor.shutdown(wait=True)
+        logger.info("Shutting down ThreadPoolExecutor...")
+        self.thread_executor.shutdown(wait=True)
         logger.info("Cancelling inactivity check task.")
         self.inactivity_check.cancel()
     
@@ -324,8 +329,11 @@ class MusicCog(commands.Cog):
             # If not cached and download is requested, download the file
             if download:
                 logger.info(f"Downloading '{query}' to cache...")
+                # Use ThreadPoolExecutor for downloads to avoid pickling issues
+                # ProcessPoolExecutor fails because yt-dlp returns unpickleable objects
+                # (e.g., selector_function) when downloading, especially for SoundCloud
                 downloaded_data = await loop.run_in_executor(
-                    self.process_executor,
+                    self.thread_executor,
                     run_yt_dlp_extractor,
                     query,
                     True
@@ -335,9 +343,13 @@ class MusicCog(commands.Cog):
                 # yt-dlp usually returns the 'ext' it decided on in downloaded_data
                 ext = downloaded_data.get('ext', 'opus') # Default fallback
                 
+                # Get the extractor name from yt-dlp (e.g., 'youtube', 'soundcloud')
+                # The outtmpl uses %(extractor)s-%(id)s.%(ext)s format
+                extractor_name = downloaded_data.get('extractor', 'youtube')
+                
                 # Construct the expected filename pattern
                 # Note: yt-dlp might sanitize the filename, but our outtmpl is simple
-                expected_filename_base = f"youtube-{youtube_id}"
+                expected_filename_base = f"{extractor_name}-{youtube_id}"
                 
                 found_file = None
                 # Check for the file with the expected extension, or scan for it
