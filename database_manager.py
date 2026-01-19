@@ -312,6 +312,8 @@ class DatabaseManager:
     def get_user_stats_long(self, user_id: int, guild_id: int) -> Dict[str, Any]:
         """
         Gets detailed statistics for a given user ID within a specific guild.
+        Time-based stats (today, this_week, etc.) are calculated relative to the
+        local timezone of the system running the bot, not UTC.
         """
         stats: Dict[str, Any] = {
             'today': 0,
@@ -329,21 +331,38 @@ class DatabaseManager:
         try:
             with conn:
                 cursor = conn.cursor()
-                now = datetime.now(timezone.utc)
-                today_start = now.strftime('%Y-%m-%d')
-                week_start = (now - timedelta(days=now.weekday())).strftime('%Y-%m-%d')
-                month_start = now.strftime('%Y-%m-01')
-                year_start = now.strftime('%Y-01-01')
+                
+                # Get the current time in the LOCAL timezone
+                # datetime.now() returns local time, we then need to convert boundaries to UTC
+                # for comparison with the UTC-stored timestamps in the database
+                local_now = datetime.now().astimezone()  # Current time with local timezone info
+                
+                # Calculate the start of today at midnight in local timezone, then convert to UTC
+                today_start_local = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+                today_start_utc = today_start_local.astimezone(timezone.utc).isoformat()
+                
+                # Start of the week (Monday) at midnight in local timezone
+                days_since_monday = local_now.weekday()
+                week_start_local = (local_now - timedelta(days=days_since_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
+                week_start_utc = week_start_local.astimezone(timezone.utc).isoformat()
+                
+                # Start of the month at midnight in local timezone
+                month_start_local = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                month_start_utc = month_start_local.astimezone(timezone.utc).isoformat()
+                
+                # Start of the year at midnight in local timezone
+                year_start_local = local_now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+                year_start_utc = year_start_local.astimezone(timezone.utc).isoformat()
 
-                # Time-based counts
+                # Time-based counts - compare full timestamps against UTC boundaries
                 start_time = time.time()
-                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(request_timestamp) = ? AND play_status = 'completed'", (user_id, guild_id, today_start))
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND request_timestamp >= ? AND play_status = 'completed'", (user_id, guild_id, today_start_utc))
                 stats['today'] = cursor.fetchone()[0]
-                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(request_timestamp) >= ? AND play_status = 'completed'", (user_id, guild_id, week_start))
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND request_timestamp >= ? AND play_status = 'completed'", (user_id, guild_id, week_start_utc))
                 stats['this_week'] = cursor.fetchone()[0]
-                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(request_timestamp) >= ? AND play_status = 'completed'", (user_id, guild_id, month_start))
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND request_timestamp >= ? AND play_status = 'completed'", (user_id, guild_id, month_start_utc))
                 stats['this_month'] = cursor.fetchone()[0]
-                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND date(request_timestamp) >= ? AND play_status = 'completed'", (user_id, guild_id, year_start))
+                cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND request_timestamp >= ? AND play_status = 'completed'", (user_id, guild_id, year_start_utc))
                 stats['this_year'] = cursor.fetchone()[0]
                 cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND play_status = 'completed'", (user_id, guild_id))
                 stats['all_time'] = cursor.fetchone()[0]
