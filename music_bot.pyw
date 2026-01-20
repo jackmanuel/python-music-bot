@@ -330,8 +330,6 @@ class MusicCog(commands.Cog):
             if download:
                 logger.info(f"Downloading '{query}' to cache...")
                 # Use ThreadPoolExecutor for downloads to avoid pickling issues
-                # ProcessPoolExecutor fails because yt-dlp returns unpickleable objects
-                # (e.g., selector_function) when downloading, especially for SoundCloud
                 downloaded_data = await loop.run_in_executor(
                     self.thread_executor,
                     run_yt_dlp_extractor,
@@ -340,12 +338,19 @@ class MusicCog(commands.Cog):
                 )
                 
                 # Dynamic filename check
-                # yt-dlp usually returns the 'ext' it decided on in downloaded_data
-                ext = downloaded_data.get('ext', 'opus') # Default fallback
+                # When downloading from a search, yt-dlp returns the search wrapper in 'entries'
+                # We need to get the actual video entry for correct extractor/extension info
+                actual_video_data = downloaded_data
+                if 'entries' in downloaded_data and downloaded_data['entries']:
+                    actual_video_data = downloaded_data['entries'][0]
+                
+                # yt-dlp usually returns the 'ext' it decided on in actual_video_data
+                ext = actual_video_data.get('ext', 'opus') # Default fallback
                 
                 # Get the extractor name from yt-dlp (e.g., 'youtube', 'soundcloud')
                 # The outtmpl uses %(extractor)s-%(id)s.%(ext)s format
-                extractor_name = downloaded_data.get('extractor', 'youtube')
+                # Use the actual video's extractor, not the search wrapper's extractor
+                extractor_name = actual_video_data.get('extractor', 'youtube')
                 
                 # Construct the expected filename pattern
                 # Note: yt-dlp might sanitize the filename, but our outtmpl is simple
