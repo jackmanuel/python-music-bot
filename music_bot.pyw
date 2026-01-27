@@ -553,14 +553,58 @@ class MusicCog(commands.Cog):
 
         # Ensure bot is in a voice channel (or join the user's)
         user_channel = ctx.author.voice.channel
-        if guild_id not in self.voice_clients or not self.voice_clients[guild_id].is_connected():
+        
+        # Check if we have a stale voice client reference (bot thinks it's not connected,
+        # but Discord still has an active/reconnecting voice client for this guild)
+        existing_guild_vc = ctx.guild.voice_client
+        our_vc = self.voice_clients.get(guild_id)
+        
+        # Determine if we need to connect
+        need_to_connect = False
+        if our_vc is None or not our_vc.is_connected():
+            # Our reference is missing or stale
+            if existing_guild_vc is not None:
+                # Discord still has a voice client for us - could be reconnecting or in a weird state
+                if existing_guild_vc.is_connected():
+                    # Reuse the existing connection
+                    logger.info(f"Reusing existing guild voice client for {guild_id}.")
+                    self.voice_clients[guild_id] = existing_guild_vc
+                else:
+                    # It exists but isn't connected - clean it up and reconnect
+                    logger.info(f"Cleaning up stale voice client for {guild_id} before reconnecting.")
+                    try:
+                        await existing_guild_vc.disconnect(force=True)
+                    except Exception as cleanup_error:
+                        logger.warning(f"Error during stale voice client cleanup: {cleanup_error}")
+                    self.voice_clients.pop(guild_id, None)
+                    need_to_connect = True
+            else:
+                need_to_connect = True
+        
+        if need_to_connect:
             logger.info(f"Play command used, joining {user_channel.name} in {guild_id}.")
             try:
-                 self.voice_clients[guild_id] = await user_channel.connect()
+                self.voice_clients[guild_id] = await user_channel.connect()
+            except discord.ClientException as e:
+                # Handle "Already connected" edge case - try to recover
+                if "Already connected" in str(e):
+                    logger.warning(f"Already connected error in {guild_id}, attempting to recover...")
+                    existing_vc = ctx.guild.voice_client
+                    if existing_vc:
+                        self.voice_clients[guild_id] = existing_vc
+                        logger.info(f"Recovered existing voice client for {guild_id}.")
+                    else:
+                        await ctx.send("Having trouble connecting to voice. Please try again in a moment.")
+                        logger.error(f"Could not recover voice client for {guild_id}.")
+                        return
+                else:
+                    await ctx.send(f"Failed to join your voice channel: {e}")
+                    logger.exception(f"Failed to join {user_channel.name} for play command.")
+                    return
             except Exception as e:
-                 await ctx.send(f"Failed to join your voice channel: {e}")
-                 logger.exception(f"Failed to join {user_channel.name} for play command.")
-                 return
+                await ctx.send(f"Failed to join your voice channel: {e}")
+                logger.exception(f"Failed to join {user_channel.name} for play command.")
+                return
         elif self.voice_clients[guild_id].channel != user_channel:
              await ctx.send("You need to be in the same voice channel as the bot.")
              return
