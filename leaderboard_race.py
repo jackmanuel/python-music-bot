@@ -173,7 +173,7 @@ def generate_race_video(
             figsize=(8, 5),
             dpi=144,
             cmap='tab20',
-            title=f'🏆 {guild_name} Song Leaderboard Race\n{start_date} - {end_date}',
+            title=f'{guild_name} Song Leaderboard Race\n{start_date} - {end_date}',
             title_size=16,
             bar_label_size=10,
             tick_label_size=10,
