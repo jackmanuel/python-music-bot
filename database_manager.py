@@ -401,3 +401,47 @@ class DatabaseManager:
             if conn:
                 conn.close()
         return stats
+
+    def get_play_history_for_race(self, guild_id: int) -> List[Dict[str, Any]]:
+        """
+        Gets play history records for generating a bar chart race.
+        Returns completed plays with request_timestamp, user_id, and user_name.
+
+        Args:
+            guild_id: The Discord Guild ID to filter by.
+
+        Returns:
+            A list of dictionaries with play record data, or empty list on error.
+        """
+        play_data: List[Dict[str, Any]] = []
+        conn = self._get_db_connection()
+        if not conn:
+            logger.warning(f"Failed to get DB connection for fetching race data for guild {guild_id}.")
+            return play_data
+
+        try:
+            with conn:
+                cursor = conn.cursor()
+                start_time = time.time()
+                cursor.execute("""
+                    SELECT request_timestamp, user_id, user_name
+                    FROM play_history
+                    WHERE guild_id = ? AND play_status = 'completed'
+                    ORDER BY request_timestamp ASC
+                """, (guild_id,))
+                results = cursor.fetchall()
+                end_time = time.time()
+                logger.info(f"Race data query took {(end_time - start_time) * 1000:.2f}ms, returned {len(results)} records")
+
+                for row in results:
+                    play_data.append({
+                        'request_timestamp': row['request_timestamp'],
+                        'user_id': row['user_id'],
+                        'user_name': row['user_name']
+                    })
+        except sqlite3.Error as e:
+            logger.error(f"Failed to query race data for guild {guild_id}: {e}", exc_info=True)
+        finally:
+            if conn:
+                conn.close()
+        return play_data

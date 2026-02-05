@@ -2,3 +2,6 @@ discord.py
 yt-dlp
 python-dotenv
 PyNaCl
+pandas
+matplotlib
+bar_chart_race
