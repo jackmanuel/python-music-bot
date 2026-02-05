@@ -87,7 +87,12 @@ YDL_OPTIONS = {
     'source_address': '0.0.0.0',
     'subtitles': False,
     'writethumbnail': False,
-    'remote_components': 'ejs:github'
+    'remote_components': 'ejs:github',
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['default', '-android_sdkless']
+        }
+    }
 }
 
 # --- FFmpeg Options ---
