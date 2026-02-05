@@ -92,7 +92,13 @@ YDL_OPTIONS = {
         'youtube': {
             'player_client': ['default', '-android_sdkless']
         }
-    }
+    },
+    # Extract audio from video files when audio-only isn't available
+    'postprocessors': [{
+        'key': 'FFmpegExtractAudio',
+        'preferredcodec': 'opus',
+        'preferredquality': '192',
+    }],
 }
 
 # --- FFmpeg Options ---
