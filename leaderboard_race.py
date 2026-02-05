@@ -11,6 +11,53 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 import pandas as pd
+
+# --- Monkey-patch bar_chart_race for pandas 3.0 compatibility ---
+# The bar_chart_race library (last updated 2020) uses deprecated fillna(method='ffill')
+# which was removed in pandas 3.0. This patch fixes it at runtime.
+import bar_chart_race._make_chart as _bcr_make_chart
+
+_original_prepare_wide_data = _bcr_make_chart.prepare_wide_data
+
+def _patched_prepare_wide_data(df, orientation='h', sort='desc', n_bars=None, 
+                                interpolate_period=False, steps_per_period=10, 
+                                compute_ranks=True):
+    """Patched version that uses ffill() instead of fillna(method='ffill')"""
+    if n_bars is None:
+        n_bars = df.shape[1]
+
+    df_values = df.reset_index()
+    df_values.index = df_values.index * steps_per_period
+    new_index = range(df_values.index[-1] + 1)
+    df_values = df_values.reindex(new_index)
+    
+    if interpolate_period:
+        if df_values.iloc[:, 0].dtype.kind == 'M':
+            first, last = df_values.iloc[[0, -1], 0]
+            dr = pd.date_range(first, last, periods=len(df_values))
+            df_values.iloc[:, 0] = dr
+        else:
+            df_values.iloc[:, 0] = df_values.iloc[:, 0].interpolate()
+    else:
+        # FIX: Use ffill() instead of fillna(method='ffill')
+        df_values.iloc[:, 0] = df_values.iloc[:, 0].ffill()
+    
+    df_values = df_values.set_index(df_values.columns[0])
+    if compute_ranks:
+        df_ranks = df_values.rank(axis=1, method='first', ascending=False).clip(upper=n_bars + 1)
+        if (sort == 'desc' and orientation == 'h') or (sort == 'asc' and orientation == 'v'):
+            df_ranks = n_bars + 1 - df_ranks
+        df_ranks = df_ranks.interpolate()
+    
+    df_values = df_values.interpolate()
+    if compute_ranks:
+        return df_values, df_ranks
+    return df_values
+
+# Apply the patch
+_bcr_make_chart.prepare_wide_data = _patched_prepare_wide_data
+# --- End monkey-patch ---
+
 import bar_chart_race as bcr
 
 logger = logging.getLogger(__name__)
