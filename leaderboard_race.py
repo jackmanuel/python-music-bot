@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 import pandas as pd
+import matplotlib.pyplot as plt
 
 # --- Monkey-patch bar_chart_race for pandas 3.0 compatibility ---
 # The bar_chart_race library (last updated 2020) uses deprecated fillna(method='ffill')
@@ -66,6 +67,14 @@ _bcr_make_chart.prepare_wide_data = _patched_prepare_wide_data
 import bar_chart_race as bcr
 
 logger = logging.getLogger(__name__)
+
+# Dark theme color constants (matching leaderboard_graph.py)
+DARK_BG_COLOR = '#1a1a2e'       # Figure background
+DARK_AXES_COLOR = '#16213e'     # Axes background
+DARK_TEXT_COLOR = 'white'       # Title text
+DARK_LABEL_COLOR = '#e0e0e0'    # Label text
+DARK_TICK_COLOR = '#b0b0b0'     # Tick text
+DARK_GRID_COLOR = '#4a4a6a'     # Grid and spine color
 
 
 def generate_race_video(
@@ -154,7 +163,51 @@ def generate_race_video(
 
         logger.info(f"Creating bar chart race animation with {len(top_users)} users...")
 
-        # Generate the bar chart race
+        # Set up dark theme for matplotlib using rcParams
+        # This ensures bar_chart_race inherits our color scheme
+        plt.style.use('dark_background')
+        plt.rcParams.update({
+            'figure.facecolor': DARK_BG_COLOR,
+            'axes.facecolor': DARK_AXES_COLOR,
+            'axes.edgecolor': DARK_GRID_COLOR,
+            'axes.labelcolor': DARK_LABEL_COLOR,
+            'axes.titlecolor': DARK_TEXT_COLOR,
+            'text.color': DARK_TEXT_COLOR,
+            'xtick.color': DARK_TICK_COLOR,
+            'ytick.color': DARK_TICK_COLOR,
+            'savefig.facecolor': DARK_BG_COLOR,
+            'savefig.edgecolor': DARK_BG_COLOR,
+        })
+
+        # Create figure with axes already styled
+        # bar_chart_race hardcodes ax.set_facecolor('.9') when it creates its own figure,
+        # but if we pass a figure with axes already added, it uses ours instead
+        # NOTE: When passing a pre-made figure, bar_chart_race skips create_figure()
+        # which means it won't set the title - we must set it ourselves
+        fig, ax = plt.subplots(figsize=(8, 5), dpi=144)
+        fig.patch.set_facecolor(DARK_BG_COLOR)
+        ax.set_facecolor(DARK_AXES_COLOR)
+        ax.tick_params(colors=DARK_TICK_COLOR, labelsize=10)
+        for spine in ax.spines.values():
+            spine.set_color(DARK_GRID_COLOR)
+        
+        # Set the title ourselves (bar_chart_race won't do it for pre-made figures)
+        ax.set_title(
+            f'{guild_name} Song Leaderboard Race\n{start_date} - {end_date}',
+            fontsize=16,
+            color=DARK_TEXT_COLOR,
+            fontweight='bold',
+            pad=15
+        )
+
+        # Create more margin at the top/bottom and significantly more on the left for names
+        plt.subplots_adjust(top=0.82, bottom=0.25, right=0.90, left=0.20)
+
+        # Manually set x-limit to ensure bar labels have space (since bcr skips this for pre-made figures)
+        max_val = cumulative_counts.max().max()
+        ax.set_xlim(0, max_val * 1.2) # Give 20% extra space for labels
+
+        # Generate the bar chart race with dark theme
         bcr.bar_chart_race(
             df=cumulative_counts,
             filename=output_path,
@@ -167,28 +220,32 @@ def generate_race_video(
             period_length=period_length,
             interpolate_period=False,
             label_bars=True,
-            bar_size=0.95,
-            period_label={'x': 0.99, 'y': 0.25, 'ha': 'right', 'va': 'center', 'size': 24},
+            bar_size=0.7,
+            period_label={
+                'x': 0.98, 'y': -0.18, 'ha': 'right', 'va': 'top', 
+                'size': 18, 'color': DARK_TEXT_COLOR
+            },
             period_fmt='%b %d, %Y',
             period_summary_func=lambda v, r: {
-                'x': 0.99, 'y': 0.18, 's': f'Total Plays: {v.sum():,.0f}',
-                'ha': 'right', 'size': 14, 'family': 'sans-serif'
+                'x': 0.98, 'y': -0.32, 's': f'Total Plays: {v.sum():,.0f}',
+                'ha': 'right', 'va': 'top', 'size': 12, 'family': 'sans-serif', 'color': DARK_LABEL_COLOR
             },
             perpendicular_bar_func=None,
             figsize=(8, 5),
             dpi=144,
             cmap='tab20',
-            title=f'{guild_name} Song Leaderboard Race\n{start_date} - {end_date}',
             title_size=16,
             bar_label_size=10,
             tick_label_size=10,
             shared_fontdict={'family': 'sans-serif', 'weight': 'normal'},
             scale='linear',
             writer=None,
-            fig=None,
-            bar_kwargs={'alpha': 0.85, 'ec': 'black', 'lw': 0.5},
+            fig=fig,
+            bar_kwargs={'alpha': 0.9, 'ec': DARK_GRID_COLOR, 'lw': 0.5},
             filter_column_colors=False,
         )
+        
+        plt.close(fig)
 
         logger.info(f"Bar chart race video saved to: {output_path}")
         return output_path
