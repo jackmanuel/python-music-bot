@@ -4,6 +4,11 @@ Generates animated bar chart race videos showing user song play counts over time
 Uses the bar_chart_race library to create MP4 animations from play history data.
 """
 
+# IMPORTANT: Set matplotlib backend BEFORE any matplotlib imports
+# This prevents Tkinter threading conflicts in async environments like Discord bots
+import matplotlib
+matplotlib.use('Agg')  # Use headless backend (no GUI, thread-safe)
+
 import logging
 import os
 import tempfile

@@ -4,6 +4,11 @@ Generates static line graph images showing cumulative user song plays over time.
 Uses matplotlib to create PNG images from play history data.
 """
 
+# IMPORTANT: Set matplotlib backend BEFORE any matplotlib imports
+# This prevents Tkinter threading conflicts in async environments like Discord bots
+import matplotlib
+matplotlib.use('Agg')  # Use headless backend (no GUI, thread-safe)
+
 import logging
 import os
 import tempfile
