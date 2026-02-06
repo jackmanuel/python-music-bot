@@ -13,6 +13,8 @@ from aiohttp import web
 
 from database_manager import DatabaseManager
 from logging_config import setup_logging
+from leaderboard_race import generate_race_video
+from leaderboard_graph import generate_cumulative_graph
 
 # --- Load environment variables from .env file ---
 load_dotenv()
@@ -1118,6 +1120,128 @@ class MusicCog(commands.Cog):
         else:
             logger.error(f"Unhandled error in statslong command: {error}", exc_info=True)
             await ctx.send("An error occurred processing the statslong command.")
+
+    @commands.command(name='leaderboardrace', aliases=['lbrace'], help='Generates an animated bar chart race video of song play history.')
+    async def leaderboard_race(self, ctx: commands.Context):
+        """Creates an MP4 animation showing the leaderboard evolving over time."""
+        logger.info(f"Leaderboard race command invoked by {ctx.author} in guild {ctx.guild.id}")
+        guild_id = ctx.guild.id
+
+        # Send initial status message
+        status_msg = await ctx.send("🎬 Generating leaderboard race video... This may take a moment.")
+
+        try:
+            # Fetch play history data
+            play_data = self.db_manager.get_play_history_for_race(guild_id)
+
+            if not play_data:
+                await status_msg.edit(content="📊 No play history data available yet. Play some songs first!")
+                return
+
+            if len(play_data) < 5:
+                await status_msg.edit(content="📊 Not enough play history to generate a race. Need at least 5 completed plays.")
+                return
+
+            # Generate the video in an executor to avoid blocking
+            loop = asyncio.get_event_loop()
+            output_path = await loop.run_in_executor(
+                None,
+                lambda: generate_race_video(play_data, ctx.guild)
+            )
+
+            if output_path is None:
+                await status_msg.edit(content="❌ Failed to generate the video. Please check the logs.")
+                return
+
+            # Send the video file
+            await status_msg.edit(content="📤 Uploading video...")
+            try:
+                with open(output_path, 'rb') as f:
+                    video_file = discord.File(f, filename="leaderboard_race.mp4")
+                    await ctx.send("🏆 **Leaderboard Race** - Watch the competition unfold!", file=video_file)
+                await status_msg.delete()
+            finally:
+                # Clean up the temp file
+                try:
+                    os.remove(output_path)
+                    logger.debug(f"Cleaned up temp video file: {output_path}")
+                except OSError as e:
+                    logger.warning(f"Failed to clean up temp file {output_path}: {e}")
+
+        except Exception as e:
+            logger.error(f"Error in leaderboard_race command: {e}", exc_info=True)
+            await status_msg.edit(content="❌ An error occurred while generating the video.")
+
+    @leaderboard_race.error
+    async def leaderboard_race_error(self, ctx: commands.Context, error: commands.CommandError):
+        """Handles errors for the leaderboard race command."""
+        if isinstance(error, commands.CommandInvokeError):
+            logger.error(f"Error during leaderboard_race command execution: {error.original}", exc_info=True)
+            await ctx.send("An unexpected error occurred while generating the leaderboard race.")
+        else:
+            logger.error(f"Unhandled error in leaderboard_race command: {error}", exc_info=True)
+            await ctx.send("An error occurred processing the leaderboard race command.")
+
+    @commands.command(name='cumulativegraph', aliases=['cg'], help='Generates a static line graph of cumulative song plays over time.')
+    async def cumulative_graph(self, ctx: commands.Context):
+        """Creates a static line graph showing cumulative plays per user over time."""
+        logger.info(f"Cumulative graph command invoked by {ctx.author} in guild {ctx.guild.id}")
+        guild_id = ctx.guild.id
+
+        # Send initial status message
+        status_msg = await ctx.send("📊 Generating cumulative graph... This may take a moment.")
+
+        try:
+            # Fetch play history data
+            play_data = self.db_manager.get_play_history_for_race(guild_id)
+
+            if not play_data:
+                await status_msg.edit(content="📊 No play history data available yet. Play some songs first!")
+                return
+
+            if len(play_data) < 5:
+                await status_msg.edit(content="📊 Not enough play history to generate a graph. Need at least 5 completed plays.")
+                return
+
+            # Generate the graph in an executor to avoid blocking
+            loop = asyncio.get_event_loop()
+            output_path = await loop.run_in_executor(
+                None,
+                lambda: generate_cumulative_graph(play_data, ctx.guild)
+            )
+
+            if output_path is None:
+                await status_msg.edit(content="❌ Failed to generate the graph. Please check the logs.")
+                return
+
+            # Send the image file
+            await status_msg.edit(content="📤 Uploading graph...")
+            try:
+                with open(output_path, 'rb') as f:
+                    image_file = discord.File(f, filename="cumulative_plays.png")
+                    await ctx.send("📈 **Cumulative Song Plays** - Song plays over time by user", file=image_file)
+                await status_msg.delete()
+            finally:
+                # Clean up the temp file
+                try:
+                    os.remove(output_path)
+                    logger.debug(f"Cleaned up temp graph file: {output_path}")
+                except OSError as e:
+                    logger.warning(f"Failed to clean up temp file {output_path}: {e}")
+
+        except Exception as e:
+            logger.error(f"Error in cumulative_graph command: {e}", exc_info=True)
+            await status_msg.edit(content="❌ An error occurred while generating the graph.")
+
+    @cumulative_graph.error
+    async def cumulative_graph_error(self, ctx: commands.Context, error: commands.CommandError):
+        """Handles errors for the cumulative graph command."""
+        if isinstance(error, commands.CommandInvokeError):
+            logger.error(f"Error during cumulative_graph command execution: {error.original}", exc_info=True)
+            await ctx.send("An unexpected error occurred while generating the cumulative graph.")
+        else:
+            logger.error(f"Unhandled error in cumulative_graph command: {error}", exc_info=True)
+            await ctx.send("An error occurred processing the cumulative graph command.")
 
     @commands.command(name='cache', help='Shows information about the song cache.')
     async def cache_info(self, ctx: commands.Context):
