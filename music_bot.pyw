@@ -111,7 +111,7 @@ YDL_OPTIONS = {
 # -vn: Disable video processing
 FFMPEG_OPTIONS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn -f s16le -ar 48000 -ac 2',
+    'options': '-vn',
     'executable': FFMPEG_EXECUTABLE
 }
 
@@ -436,10 +436,14 @@ class MusicCog(commands.Cog):
 
 
     def _play_next(self, guild_id, error=None):
-        """Callback function executed after a song finishes or errors."""
+        """Callback function executed after a song finishes or errors.
+        
+        This is a sync callback from vc.play's 'after' parameter.
+        It schedules the async _play_next_async coroutine to handle
+        the actual playback setup (since FFmpegOpusAudio.from_probe is async).
+        """
         if error:
             logger.error(f'Player error in guild {guild_id}: {error}')
-            # Potentially notify the channel about the error
 
         # Check if the song was intentionally skipped
         was_skipped = self.current_song.get(guild_id, {}).get('was_skipped', False)
@@ -454,9 +458,29 @@ class MusicCog(commands.Cog):
         if not queue:
             logger.info(f"Queue empty for guild {guild_id}.")
             self.current_song.pop(guild_id, None)
-            # Start inactivity timer logic here by updating last_activity
             self.last_activity[guild_id] = time.time()
-            # Don't disconnect immediately, let the loop handle it
+            return
+
+        # Schedule the async playback on the bot's event loop
+        future = asyncio.run_coroutine_threadsafe(
+            self._play_next_async(guild_id), self.bot.loop
+        )
+        # Log any exceptions that occur in the scheduled coroutine
+        future.add_done_callback(
+            lambda f: logger.error(f"Error in _play_next_async for guild {guild_id}: {f.exception()}") if f.exception() else None
+        )
+
+    async def _play_next_async(self, guild_id):
+        """Async handler for playing the next song in the queue.
+        
+        Uses FFmpegOpusAudio.from_probe() which probes the file to detect
+        its codec and can passthrough Opus audio directly without re-encoding.
+        """
+        queue = self.get_queue(guild_id)
+        if not queue:
+            logger.info(f"Queue empty for guild {guild_id} (async check).")
+            self.current_song.pop(guild_id, None)
+            self.last_activity[guild_id] = time.time()
             return
 
         # Get next song info from the queue
@@ -471,7 +495,7 @@ class MusicCog(commands.Cog):
 
         if guild_id not in self.voice_clients or not self.voice_clients[guild_id].is_connected():
             logger.warning(f"Voice client not available or disconnected in guild {guild_id} when trying to play next.")
-            self.current_song.pop(guild_id, None) # Clear current song as we can't play
+            self.current_song.pop(guild_id, None)
             return
 
         vc = self.voice_clients[guild_id]
@@ -479,24 +503,24 @@ class MusicCog(commands.Cog):
             # Use different FFmpeg options for local files vs streaming
             if next_song_info.get('is_cached', False):
                 local_ffmpeg_options = {
-                    'before_options': '-re -nostdin -loglevel error',
-                    'options': f'-vn -f s16le -ar 48000 -ac 2 -af "volume={FFMPEG_VOLUME}"',
                     'executable': FFMPEG_EXECUTABLE
                 }
-                source = discord.FFmpegPCMAudio(next_song_info['url'], **local_ffmpeg_options)
             else:
-                source = discord.FFmpegPCMAudio(next_song_info['url'], **FFMPEG_OPTIONS)
+                local_ffmpeg_options = FFMPEG_OPTIONS
             
+            source = await discord.FFmpegOpusAudio.from_probe(
+                next_song_info['url'], **local_ffmpeg_options
+            )
             vc.play(source, after=lambda e: self._play_next(guild_id, error=e))
-            self.last_activity[guild_id] = time.time() # Update activity time when song starts
+            self.last_activity[guild_id] = time.time()
         except discord.ClientException as e:
              logger.error(f"Discord ClientException while trying to play next in {guild_id}: {e}")
-             self.current_song.pop(guild_id, None) # Clear failed song
-             self._play_next(guild_id) # Recursive call to try next song
+             self.current_song.pop(guild_id, None)
+             await self._play_next_async(guild_id)  # Recursive call to try next song
         except Exception as e:
             logger.exception(f"Unexpected error during playback setup in {guild_id}: {e}")
-            self.current_song.pop(guild_id, None) # Clear failed song
-            self._play_next(guild_id) # Try next song on unexpected error
+            self.current_song.pop(guild_id, None)
+            await self._play_next_async(guild_id)  # Try next song on unexpected error
 
 
     @commands.command(name='join', help='Joins the voice channel you are currently in.')
@@ -729,14 +753,14 @@ class MusicCog(commands.Cog):
                 # Use different FFmpeg options for local files vs streaming
                 if song_info.get('is_cached', False):
                     local_ffmpeg_options = {
-                        'before_options': '-re -nostdin -loglevel error',
-                        'options': f'-vn -f s16le -ar 48000 -ac 2 -af "volume={FFMPEG_VOLUME}"',
                         'executable': FFMPEG_EXECUTABLE
                     }
-                    source = discord.FFmpegPCMAudio(song_info['url'], **local_ffmpeg_options)
                 else:
-                    source = discord.FFmpegPCMAudio(song_info['url'], **FFMPEG_OPTIONS)
+                    local_ffmpeg_options = FFMPEG_OPTIONS
                 
+                source = await discord.FFmpegOpusAudio.from_probe(
+                    song_info['url'], **local_ffmpeg_options
+                )
                 vc.play(source, after=lambda e: self._play_next(guild_id, error=e))
 
                 embed = discord.Embed(title="Now Playing", description=f"[{song_info['title']}]({song_info['webpage_url']})", color=discord.Color.green())
