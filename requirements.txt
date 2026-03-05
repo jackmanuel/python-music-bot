@@ -1,4 +1,5 @@
 discord.py
+davey
 yt-dlp
 python-dotenv
 PyNaCl
