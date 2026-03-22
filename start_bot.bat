@@ -52,7 +52,7 @@ start "MusicBot" /B %VENV_PYTHONW% %BOT_SCRIPT%
 
 echo The bot has been started. You can close this window.
 echo To check logs, visit http://localhost:8000
-echo To shut down, visit http://localhost:8000/shutdown
+echo To shut down, send a POST request to http://localhost:8000/shutdown (or use stop_bot.bat)
 
 REM A short pause so the user can read the message before the window closes.
 timeout /t 5 > nul

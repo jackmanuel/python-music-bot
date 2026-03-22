@@ -28,6 +28,14 @@
     </style>
 </head>
 <body>
+    <div style="background-color: #333; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #555;">
+        <h3 style="margin: 0; font-family: sans-serif;">Music Bot Logs</h3>
+        <form method="POST" action="/shutdown" onsubmit="return confirm('Are you sure you want to shut down the bot?');" style="margin: 0;">
+            <button type="submit" style="background-color: #d9534f; color: white; border: none; padding: 8px 16px; cursor: pointer; border-radius: 4px; font-weight: bold; font-family: sans-serif;">
+                Shutdown Bot
+            </button>
+        </form>
+    </div>
     <pre id="log-content">{log_content}</pre>
     <script>
         // This script now targets the 'pre' element for scrolling.

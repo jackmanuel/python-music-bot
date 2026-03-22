@@ -8,10 +8,10 @@ set SHUTDOWN_URL=http://localhost:8000/shutdown
 
 echo Sending graceful shutdown signal to the Music Bot...
 
-REM Use curl to send a GET request to the shutdown URL.
+REM Use curl to send a POST request to the shutdown URL.
 REM -s makes it silent (no progress meter).
 REM -f makes it fail silently on server errors (like if the bot isn't running).
-curl -s -f %SHUTDOWN_URL% > nul
+curl -s -X POST -f %SHUTDOWN_URL% > nul
 
 REM Check the result of the curl command.
 if errorlevel 1 (

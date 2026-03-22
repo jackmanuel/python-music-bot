@@ -1524,16 +1524,23 @@ async def handle_logs(request):
 # This handler triggers the graceful shutdown
 async def handle_shutdown(request):
     logger.info("Shutdown command received via web interface.")
+    async def perform_shutdown():
+        # Inform Discord that the bot is going offline immediately
+        await bot.change_presence(status=discord.Status.offline)
+        # Add a tiny delay to ensure the presence update is sent before the websocket closes
+        await asyncio.sleep(1)
+        await bot.close()
+
     # We create a task to close the bot. This allows us to send the HTTP
     # response back to the browser before the application fully terminates.
-    asyncio.create_task(bot.close())
+    asyncio.create_task(perform_shutdown())
     return web.Response(text="Shutdown signal sent. The bot will now terminate gracefully.")
 
 # This function sets up and starts the aiohttp server
 async def start_web_server():
     app = web.Application()
     app.router.add_get("/", handle_logs)
-    app.router.add_get("/shutdown", handle_shutdown)
+    app.router.add_post("/shutdown", handle_shutdown)
     
     runner = web.AppRunner(app)
     await runner.setup()
@@ -1544,7 +1551,7 @@ async def start_web_server():
         await site.start()
         logger.info(f"--- Log server running on http://{SERVER_HOST}:{SERVER_PORT} ---")
         logger.info(f"--- View logs at: http://{SERVER_HOST}:{SERVER_PORT} ---")
-        logger.info(f"--- Shutdown bot at: http://{SERVER_HOST}:{SERVER_PORT}/shutdown ---")
+        logger.info(f"--- To shutdown bot, send a POST request to: http://{SERVER_HOST}:{SERVER_PORT}/shutdown ---")
         await asyncio.Event().wait()
     finally:
         logger.info("Web server is shutting down.")

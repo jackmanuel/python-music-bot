@@ -76,7 +76,7 @@ If you prefer to run it manually, open a Command Prompt, activate the virtual en
 The bot includes a simple web interface accessible from your browser.
 
 *   **Log Viewer:** Open `http://localhost:8000` in your web browser to see the bot's live log output. This is useful for monitoring activity or diagnosing issues without needing to watch the console.
-*   **Remote Shutdown:** To stop the bot, you can visit `http://localhost:8000/shutdown`. This provides a clean way to terminate the bot process, and it's what the `stop_bot.bat` script uses.
+*   **Remote Shutdown:** To stop the bot, you can click the **"Shutdown Bot"** button at the top of the Log Viewer page (`http://localhost:8000`). Alternatively, you can run the `stop_bot.bat` script, which sends a `POST` request to `http://localhost:8000/shutdown`. Do not just visit the `/shutdown` URL in your browser manually, as `GET` requests are intentionally ignored to prevent accidental shutdowns from browser prefetching!
 
 ## Basic Commands
 
