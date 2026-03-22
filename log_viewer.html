@@ -2,7 +2,6 @@
 <html>
 <head>
     <title>Music Bot Log</title>
-    <meta http-equiv="refresh" content="5">
     <style>
         html, body { 
             height: 100%; 
@@ -40,8 +39,32 @@
     <script>
         // This script now targets the 'pre' element for scrolling.
         var logContent = document.getElementById("log-content");
-        // Set the scroll position to the very bottom.
+        // Initial scroll to bottom.
         logContent.scrollTop = logContent.scrollHeight;
+
+        // Periodically fetch new logs
+        setInterval(function() {
+            // Check if user is scrolled to the very bottom
+            var isAtBottom = Math.ceil(logContent.scrollTop + logContent.clientHeight) >= logContent.scrollHeight - 10;
+            
+            if (!isAtBottom) {
+                return; // Don't fetch new logs if the user is reading history
+            }
+
+            fetch(window.location.href)
+                .then(function(response) { return response.text(); })
+                .then(function(html) {
+                    var parser = new DOMParser();
+                    var doc = parser.parseFromString(html, "text/html");
+                    var newPre = doc.getElementById("log-content");
+                    
+                    if (newPre && newPre.innerHTML !== logContent.innerHTML) {
+                        logContent.innerHTML = newPre.innerHTML;
+                        logContent.scrollTop = logContent.scrollHeight;
+                    }
+                })
+                .catch(function(err) { console.error("Error fetching logs:", err); });
+        }, 5000);
     </script>
 </body>
 </html>
