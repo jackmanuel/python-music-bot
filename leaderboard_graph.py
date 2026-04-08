@@ -140,7 +140,7 @@ def generate_cumulative_graph(
         ax.set_ylabel('Total Songs Played', fontsize=12, color='#e0e0e0')
 
         # Format x-axis dates
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b '%y"))
         ax.xaxis.set_major_locator(mdates.AutoDateLocator())
         plt.xticks(rotation=45, ha='right', fontsize=10, color='#b0b0b0')
         plt.yticks(fontsize=10, color='#b0b0b0')
