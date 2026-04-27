@@ -7,6 +7,7 @@ import logging
 import time
 from collections import deque
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 import concurrent.futures
 from aiohttp import web
@@ -16,8 +17,21 @@ from logging_config import setup_logging
 from leaderboard_race import generate_race_video
 from leaderboard_graph import generate_cumulative_graph
 
+# --- Project paths ---
+BASE_DIR = Path(__file__).resolve().parents[2]
+SONG_CACHE_DIR = BASE_DIR / "song_cache"
+LOG_VIEWER_TEMPLATE = BASE_DIR / "web" / "templates" / "log_viewer.html"
+
+
+def project_path_from_env(env_var: str, default: Path) -> Path:
+    """Resolve project-relative paths from environment variables."""
+    configured_path = os.getenv(env_var)
+    path = Path(configured_path) if configured_path else default
+    return path if path.is_absolute() else BASE_DIR / path
+
+
 # --- Load environment variables from .env file ---
-load_dotenv()
+load_dotenv(BASE_DIR / ".env")
 
 # --- Configuration ---
 # Load token securely from environment variable
@@ -40,9 +54,9 @@ INACTIVITY_TIMEOUT_MINUTES = 20 # Minutes before leaving the voice channel due t
 # Songs longer than this will be rejected to save performance and disk space
 MAX_SONG_DURATION_SECONDS = int(os.getenv("MAX_SONG_DURATION_SECONDS", "1800"))
 
-# --- Database Configuration ---
-DATABASE_FILE = os.getenv("DATABASE_FILE_PATH", "database/music_log.db")
-LOG_FILE = os.getenv("LOG_FILE_PATH", "logs/music_bot.log")
+# --- Runtime file configuration ---
+DATABASE_FILE = project_path_from_env("DATABASE_FILE_PATH", BASE_DIR / "database" / "music_log.db")
+LOG_FILE = project_path_from_env("LOG_FILE_PATH", BASE_DIR / "logs" / "music_bot.log")
 
 SERVER_HOST = "localhost"
 SERVER_PORT = 8000
@@ -53,8 +67,8 @@ logger = logging.getLogger(__name__)
 
 # Add a log message to confirm which FFmpeg path is being used
 logger.info(f"Using FFmpeg executable located at: {FFMPEG_EXECUTABLE}")
-logger.info(f"Database file located at: {os.path.abspath(DATABASE_FILE)}")
-logger.info(f"Log file located at: {os.path.abspath(LOG_FILE)}")
+logger.info(f"Database file located at: {DATABASE_FILE}")
+logger.info(f"Log file located at: {LOG_FILE}")
 
 # Format the duration for logging
 def format_duration_log(seconds: float) -> str:
@@ -77,7 +91,7 @@ logger.info(f"Maximum song duration limit: {MAX_SONG_DURATION_SECONDS} seconds (
 # --- yt-dlp Options ---
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
-    'outtmpl': 'song_cache/%(extractor)s-%(id)s.%(ext)s',
+    'outtmpl': str(SONG_CACHE_DIR / '%(extractor)s-%(id)s.%(ext)s'),
     'restrictfilenames': True,
     'noplaylist': True,
     'nocheckcertificate': True,
@@ -220,7 +234,7 @@ class MusicCog(commands.Cog):
     
     def _load_cache(self):
         """Load existing song cache from the song_cache directory."""
-        cache_dir = "song_cache"
+        cache_dir = SONG_CACHE_DIR
         if not os.path.exists(cache_dir):
             os.makedirs(cache_dir)
             return
@@ -241,7 +255,7 @@ class MusicCog(commands.Cog):
                         # Join all parts except the first one (extractor) to get the ID
                         # This handles IDs with hyphens better
                         youtube_id = "-".join(parts[1:]) 
-                        file_path = os.path.join(cache_dir, filename)
+                        file_path = str(cache_dir / filename)
                         self.song_cache[youtube_id] = file_path
                 except Exception as e:
                     logger.error(f"Error loading cache file {filename}: {e}")
@@ -371,15 +385,15 @@ class MusicCog(commands.Cog):
                 
                 found_file = None
                 # Check for the file with the expected extension, or scan for it
-                potential_path = os.path.join("song_cache", f"{expected_filename_base}.{ext}")
+                potential_path = str(SONG_CACHE_DIR / f"{expected_filename_base}.{ext}")
                 
                 if os.path.exists(potential_path):
                     found_file = potential_path
                 else:
                     # Fallback: Scan directory for the file we just downloaded
-                    for fname in os.listdir("song_cache"):
+                    for fname in os.listdir(SONG_CACHE_DIR):
                         if fname.startswith(expected_filename_base):
-                            found_file = os.path.join("song_cache", fname)
+                            found_file = str(SONG_CACHE_DIR / fname)
                             break
                 
                 if found_file:
@@ -1335,11 +1349,11 @@ class MusicCog(commands.Cog):
             await self.bot.wait_for('message', check=check, timeout=30.0)
             
             # Clear the cache
-            cache_dir = "song_cache"
+            cache_dir = SONG_CACHE_DIR
             if os.path.exists(cache_dir):
                 for filename in os.listdir(cache_dir):
                     if filename.endswith(".opus"):
-                        file_path = os.path.join(cache_dir, filename)
+                        file_path = str(cache_dir / filename)
                         try:
                             os.remove(file_path)
                             logger.info(f"Deleted cached file: {file_path}")
@@ -1503,7 +1517,7 @@ async def handle_logs(request):
             log_content = "".join(last_lines)
 
         # Read the HTML template
-        with open('log_viewer.html', 'r', encoding='utf-8') as f:
+        with open(LOG_VIEWER_TEMPLATE, 'r', encoding='utf-8') as f:
             html_template = f.read()
 
         # Escape the log content and inject it into the template

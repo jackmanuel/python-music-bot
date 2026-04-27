@@ -8,7 +8,7 @@ set SCRIPT_DIR=%~dp0
 
 REM Define the paths to the virtual environment and the main python script.
 set VENV_PYTHONW="%SCRIPT_DIR%.venv\Scripts\pythonw.exe"
-set BOT_SCRIPT="%SCRIPT_DIR%music_bot.pyw"
+set BOT_SCRIPT="%SCRIPT_DIR%src\music_bot\music_bot.pyw"
 
 REM --- Check if the bot is already running by checking the port ---
 REM This looks for ":8000" followed by spaces and then "LISTENING".
