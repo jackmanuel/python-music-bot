@@ -1,4 +1,3 @@
-# database_manager.py
 import sqlite3
 import logging
 import time
@@ -6,8 +5,7 @@ from datetime import datetime, timezone, timedelta
 import os
 from typing import Union, Optional, List, Dict, Any
 
-# Configure logging for this module
-logger = logging.getLogger(__name__) # Use the module's name for the logger
+logger = logging.getLogger(__name__)
 
 class DatabaseManager:
     """Handles all database operations for the music bot."""
@@ -21,7 +19,6 @@ class DatabaseManager:
         """
         self.db_file = db_file
         logger.info(f"DatabaseManager initialized with file: {self.db_file}")
-        # Ensure the directory exists if the path includes folders
         db_dir = os.path.dirname(self.db_file)
         if db_dir and not os.path.exists(db_dir):
             try:
@@ -29,14 +26,13 @@ class DatabaseManager:
                 logger.info(f"Created database directory: {db_dir}")
             except OSError as e:
                 logger.error(f"Failed to create database directory {db_dir}: {e}")
-        # Initialize the database table structure
         self._initialize_database()
 
     def _get_db_connection(self):
         """Gets a connection to the SQLite database."""
         try:
             conn = sqlite3.connect(self.db_file, timeout=10)
-            conn.row_factory = sqlite3.Row # Access columns by name
+            conn.row_factory = sqlite3.Row
             # Enable WAL mode for potentially better concurrency, though less critical for simple bots
             # conn.execute("PRAGMA journal_mode=WAL;")
             return conn
@@ -54,7 +50,6 @@ class DatabaseManager:
         try:
             with conn:
                 cursor = conn.cursor()
-                # Create the main table if it doesn't exist
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS play_history (
                         request_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,7 +67,6 @@ class DatabaseManager:
                         scrobble_status TEXT NOT NULL DEFAULT 'new'
                     )
                 """)
-                # Add index for faster user lookups
                 cursor.execute("""
                     CREATE INDEX IF NOT EXISTS idx_play_history_user_id ON play_history (user_id);
                 """)
@@ -200,7 +194,6 @@ class DatabaseManager:
                     SET play_status = 'skipped'
                     WHERE play_status IN ('queued', 'playing')
                 """)
-                # rowcount will tell us how many rows were affected
                 changed_rows = cursor.rowcount
                 if changed_rows > 0:
                     logger.info(f"Cleaned up {changed_rows} orphaned 'queued' or 'playing' song(s), setting play_status to 'skipped'.")
@@ -260,18 +253,15 @@ class DatabaseManager:
             and 'request_count', ordered by request_count descending.
             Returns an empty list on error or if no data exists.
         """
-        # Initialize the result list with the precise target type *before* any operations
         leaderboard_data: List[Dict[str, Any]] = []
-        conn: Optional[sqlite3.Connection] = None  # Explicitly type conn as potentially None
+        conn: Optional[sqlite3.Connection] = None
 
         try:
             conn = self._get_db_connection()
-            if conn is None:  # Use 'is None' for explicit None check
+            if conn is None:
                 logger.warning("Failed to get DB connection for fetching leaderboard stats (returned None).")
-                # Return the pre-initialized empty list matching the type hint
                 return leaderboard_data
 
-            # Proceed only if conn is not None
             with conn:
                 cursor = conn.cursor()
                 start_time = time.time()
@@ -291,8 +281,6 @@ class DatabaseManager:
                 logger.info(f"Leaderboard query took {(end_time - start_time) * 1000:.2f}ms")
 
                 for row in results:
-                    # Ensure keys match column names/aliases from the query
-                    # The types returned by sqlite (int, str) are compatible with Any
                     user_data: Dict[str, Any] = {
                         'user_id': row['user_id'],
                         'user_name': row['user_name'],
@@ -332,29 +320,24 @@ class DatabaseManager:
             with conn:
                 cursor = conn.cursor()
                 
-                # Get the current time in the LOCAL timezone
                 # datetime.now() returns local time, we then need to convert boundaries to UTC
                 # for comparison with the UTC-stored timestamps in the database
-                local_now = datetime.now().astimezone()  # Current time with local timezone info
+                local_now = datetime.now().astimezone()
                 
-                # Calculate the start of today at midnight in local timezone, then convert to UTC
                 today_start_local = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
                 today_start_utc = today_start_local.astimezone(timezone.utc).isoformat()
                 
-                # Start of the week (Monday) at midnight in local timezone
                 days_since_monday = local_now.weekday()
                 week_start_local = (local_now - timedelta(days=days_since_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
                 week_start_utc = week_start_local.astimezone(timezone.utc).isoformat()
                 
-                # Start of the month at midnight in local timezone
                 month_start_local = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
                 month_start_utc = month_start_local.astimezone(timezone.utc).isoformat()
                 
-                # Start of the year at midnight in local timezone
                 year_start_local = local_now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
                 year_start_utc = year_start_local.astimezone(timezone.utc).isoformat()
 
-                # Time-based counts - compare full timestamps against UTC boundaries
+                # Compare full UTC timestamps against local day/week/month/year boundaries.
                 start_time = time.time()
                 cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND request_timestamp >= ? AND play_status = 'completed'", (user_id, guild_id, today_start_utc))
                 stats['today'] = cursor.fetchone()[0]
@@ -367,7 +350,6 @@ class DatabaseManager:
                 cursor.execute("SELECT COUNT(*) FROM play_history WHERE user_id = ? AND guild_id = ? AND play_status = 'completed'", (user_id, guild_id))
                 stats['all_time'] = cursor.fetchone()[0]
 
-                # Top 5 most frequent requests
                 cursor.execute("""
                     SELECT resolved_title, COUNT(*) as request_count
                     FROM play_history
@@ -378,7 +360,6 @@ class DatabaseManager:
                 """, (user_id, guild_id))
                 stats['top_5_requests'] = [{'title': row['resolved_title'], 'count': row['request_count']} for row in cursor.fetchall()]
 
-                # Longest request streak
                 cursor.execute("SELECT DISTINCT date(request_timestamp) FROM play_history WHERE user_id = ? AND guild_id = ? AND play_status = 'completed' ORDER BY date(request_timestamp)", (user_id, guild_id))
                 request_dates = [datetime.strptime(row[0], '%Y-%m-%d').date() for row in cursor.fetchall()]
                 if request_dates:

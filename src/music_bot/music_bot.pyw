@@ -17,7 +17,6 @@ from logging_config import setup_logging
 from leaderboard_race import generate_race_video
 from leaderboard_graph import generate_cumulative_graph
 
-# --- Project paths ---
 BASE_DIR = Path(__file__).resolve().parents[2]
 SONG_CACHE_DIR = BASE_DIR / "song_cache"
 LOG_VIEWER_TEMPLATE = BASE_DIR / "web" / "templates" / "log_viewer.html"
@@ -30,47 +29,37 @@ def project_path_from_env(env_var: str, default: Path) -> Path:
     return path if path.is_absolute() else BASE_DIR / path
 
 
-# --- Load environment variables from .env file ---
 load_dotenv(BASE_DIR / ".env")
 
-# --- Configuration ---
-# Load token securely from environment variable
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 if not DISCORD_TOKEN:
     print("CRITICAL ERROR: DISCORD_BOT_TOKEN not found in environment variables.")
     print("Make sure you have a .env file with DISCORD_BOT_TOKEN=YOUR_TOKEN")
     exit()
 
-# --- Load FFmpeg Path from environment variable ---
-# Get the path from .env, defaulting to just "ffmpeg" if the variable is not set.
-# This allows it to still work if FFmpeg is in the system PATH and the .env variable isn't defined.
 FFMPEG_EXECUTABLE = os.getenv("FFMPEG_EXECUTABLE_PATH", "ffmpeg")
 FFMPEG_VOLUME = "0.5"
 
-INACTIVITY_TIMEOUT_MINUTES = 20 # Minutes before leaving the voice channel due to inactivity
+INACTIVITY_TIMEOUT_MINUTES = 20
 
 # --- Song Duration Limit ---
 # Maximum song duration in seconds (default: 30 minutes = 1800 seconds)
 # Songs longer than this will be rejected to save performance and disk space
 MAX_SONG_DURATION_SECONDS = int(os.getenv("MAX_SONG_DURATION_SECONDS", "1800"))
 
-# --- Runtime file configuration ---
 DATABASE_FILE = project_path_from_env("DATABASE_FILE_PATH", BASE_DIR / "database" / "music_log.db")
 LOG_FILE = project_path_from_env("LOG_FILE_PATH", BASE_DIR / "logs" / "music_bot.log")
 
 SERVER_HOST = "localhost"
 SERVER_PORT = 8000
 
-# --- Basic Logging ---
 setup_logging(log_file_path=LOG_FILE)
 logger = logging.getLogger(__name__)
 
-# Add a log message to confirm which FFmpeg path is being used
 logger.info(f"Using FFmpeg executable located at: {FFMPEG_EXECUTABLE}")
 logger.info(f"Database file located at: {DATABASE_FILE}")
 logger.info(f"Log file located at: {LOG_FILE}")
 
-# Format the duration for logging
 def format_duration_log(seconds: float) -> str:
     """Formats seconds into MM:SS or HH:MM:SS for logging."""
     if seconds is None or not isinstance(seconds, (int, float)):
@@ -88,7 +77,6 @@ def format_duration_log(seconds: float) -> str:
 
 logger.info(f"Maximum song duration limit: {MAX_SONG_DURATION_SECONDS} seconds ({format_duration_log(MAX_SONG_DURATION_SECONDS)})")
 
-# --- yt-dlp Options ---
 YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'outtmpl': str(SONG_CACHE_DIR / '%(extractor)s-%(id)s.%(ext)s'),
@@ -117,7 +105,6 @@ YDL_OPTIONS = {
     }],
 }
 
-# --- FFmpeg Options ---
 # -before_options: Handle reconnections before decoding starts
 # -reconnect 1: Enable reconnection
 # -reconnect_streamed 1: Enable reconnection on streamed URLs
@@ -136,26 +123,20 @@ def run_yt_dlp_extractor(query, download=False):
     Needs YDL_OPTIONS to be globally accessible or passed explicitly if refactored.
     """
     try:
-        # Create a custom logger for yt-dlp to capture its output
         ydl_logger = logging.getLogger('yt-dlp')
         ydl_logger.setLevel(logging.DEBUG)
-        
-        # Create a copy of YDL_OPTIONS to avoid modifying the global one
+
         ydl_options = YDL_OPTIONS.copy()
         ydl_options['logger'] = ydl_logger
-        
+
         # NOTE: Creates a new YoutubeDL instance each time in the new process.
         # This is generally fine for ProcessPoolExecutor.
         with yt_dlp.YoutubeDL(ydl_options) as ydl:
             data = ydl.extract_info(query, download=download)
         return data
     except Exception as e:
-        # Log or handle errors occurring *within* the worker process if necessary
-        # For simplicity, we'll let the main process catch it via the future
         logger.error(f"Error within run_yt_dlp_extractor for '{query}': {e}")
-        # Re-raise or return an indicator if needed, but often letting the
-        # executor raise it in the main thread is sufficient.
-        raise # Re-raise the exception to be caught by the await call
+        raise
 
 def run_yt_dlp_search(query):
     """
@@ -163,11 +144,9 @@ def run_yt_dlp_search(query):
     This is optimized for just getting video information.
     """
     try:
-        # Create a custom logger for yt-dlp to capture its output
         ydl_logger = logging.getLogger('yt-dlp')
         ydl_logger.setLevel(logging.DEBUG)
-        
-        # Create search-specific options - no download, no post-processing
+
         search_options = {
             'format': 'bestaudio/best',
             'restrictfilenames': True,
@@ -180,7 +159,6 @@ def run_yt_dlp_search(query):
             'default_search': 'ytsearch1:',
             'source_address': '0.0.0.0',
             'logger': ydl_logger,
-            # No postprocessors for search only
         }
         
         with yt_dlp.YoutubeDL(search_options) as ydl:
@@ -191,24 +169,21 @@ def run_yt_dlp_search(query):
         raise
 
 
-# --- Bot Class ---
 intents = discord.Intents.default()
-intents.message_content = True  # Enable message content intent
-intents.voice_states = True     # Enable voice state intent for joining/leaving tracking
-intents.members = True # Needed for stats command
+intents.message_content = True
+intents.voice_states = True
+intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, case_insensitive=True)
 
-# --- Music Cog ---
 class MusicCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.queues = {}  # Dictionary to hold queues for each guild {guild_id: deque()}
-        self.current_song = {} # Dictionary to hold current song info {guild_id: song_info}
-        self.voice_clients = {} # Dictionary to hold voice clients {guild_id: voice_client}
-        self.last_activity = {} # Dictionary to track last activity time {guild_id: timestamp}
-        self.song_cache = {}  # Dictionary to hold cached song info {youtube_id: file_path}
-        # Use 1 quarter the cores, minimum 1
+        self.queues = {}
+        self.current_song = {}
+        self.voice_clients = {}
+        self.last_activity = {}
+        self.song_cache = {}
         cpu_cores = os.cpu_count() or 1
         max_workers = max(1, cpu_cores // 4)
         logger.info(f"Initializing ProcessPoolExecutor with max_workers={max_workers}")
@@ -219,7 +194,6 @@ class MusicCog(commands.Cog):
 
         self.db_manager = DatabaseManager(DATABASE_FILE)
         
-        # Load existing cache
         self._load_cache()
 
         self.inactivity_check.start()
@@ -240,16 +214,14 @@ class MusicCog(commands.Cog):
             return
             
         logger.info("Loading existing song cache...")
-        # Supported audio extensions
         valid_extensions = ('.opus', '.m4a', '.webm', '.mp3', '.aac', '.wav')
         
         for filename in os.listdir(cache_dir):
             if filename.endswith(valid_extensions):
                 # Extract YouTube ID from filename (format: extractor-id.ext)
-                # We need to handle IDs that might have hyphens, so split by extension first
+                # IDs may contain hyphens, so split by extension first.
                 try:
                     name_part = os.path.splitext(filename)[0]
-                    # Assuming format extractor-id
                     parts = name_part.split('-')
                     if len(parts) >= 2:
                         # Join all parts except the first one (extractor) to get the ID
@@ -298,7 +270,6 @@ class MusicCog(commands.Cog):
         """Extracts info using yt-dlp in an executor to avoid blocking."""
         loop = asyncio.get_event_loop()
         try:
-            # First, search for the video without downloading
             logger.debug(f"Submitting yt-dlp search for '{query}' to process pool.")
             data = await loop.run_in_executor(
                 self.process_executor,
@@ -315,7 +286,6 @@ class MusicCog(commands.Cog):
                 logger.info(f"Found multiple entries for '{query}', using first result.")
                 data = data['entries'][0]
 
-            # Check song duration against the maximum limit
             duration = data.get('duration')
             if duration and duration > MAX_SONG_DURATION_SECONDS:
                 logger.warning(f"Song '{data.get('title', 'Unknown')}' exceeds maximum duration limit "
@@ -328,20 +298,17 @@ class MusicCog(commands.Cog):
                     'webpage_url': data.get('webpage_url', query)
                 }
 
-            # Get YouTube ID for caching
             youtube_id = data.get('id')
             if not youtube_id:
                 logger.warning(f"Could not extract YouTube ID for '{query}'.")
                 return None
 
-            # Check if already cached
             cached_file = self._get_cached_file(youtube_id)
             if cached_file and os.path.exists(cached_file):
                 logger.info(f"Using cached file for '{query}': {cached_file}")
-                # Prepare song info dictionary with cached file
                 song_info = {
                     'title': data.get('title', 'Unknown Title'),
-                    'url': cached_file,  # Use local file path instead of stream URL
+                    'url': cached_file,
                     'thumbnail': data.get('thumbnail'),
                     'duration': data.get('duration'),
                     'webpage_url': data.get('webpage_url', query),
@@ -349,11 +316,10 @@ class MusicCog(commands.Cog):
                     'youtube_id': youtube_id,
                     'start_time': None,
                     'is_cached': True,
-                    'was_previously_cached': True  # Track if it was already cached
+                    'was_previously_cached': True
                 }
                 return song_info
 
-            # If not cached and download is requested, download the file
             if download:
                 logger.info(f"Downloading '{query}' to cache...")
                 # Use ThreadPoolExecutor for downloads to avoid pickling issues
@@ -366,31 +332,27 @@ class MusicCog(commands.Cog):
                 
                 # Dynamic filename check
                 # When downloading from a search, yt-dlp returns the search wrapper in 'entries'
-                # We need to get the actual video entry for correct extractor/extension info
+                # Use the actual video entry for correct extractor/extension info.
                 actual_video_data = downloaded_data
                 if 'entries' in downloaded_data and downloaded_data['entries']:
                     actual_video_data = downloaded_data['entries'][0]
                 
-                # yt-dlp usually returns the 'ext' it decided on in actual_video_data
-                ext = actual_video_data.get('ext', 'opus') # Default fallback
+                ext = actual_video_data.get('ext', 'opus')
                 
                 # Get the extractor name from yt-dlp (e.g., 'youtube', 'soundcloud')
                 # The outtmpl uses %(extractor)s-%(id)s.%(ext)s format
                 # Use the actual video's extractor, not the search wrapper's extractor
                 extractor_name = actual_video_data.get('extractor', 'youtube')
                 
-                # Construct the expected filename pattern
                 # Note: yt-dlp might sanitize the filename, but our outtmpl is simple
                 expected_filename_base = f"{extractor_name}-{youtube_id}"
                 
                 found_file = None
-                # Check for the file with the expected extension, or scan for it
                 potential_path = str(SONG_CACHE_DIR / f"{expected_filename_base}.{ext}")
                 
                 if os.path.exists(potential_path):
                     found_file = potential_path
                 else:
-                    # Fallback: Scan directory for the file we just downloaded
                     for fname in os.listdir(SONG_CACHE_DIR):
                         if fname.startswith(expected_filename_base):
                             found_file = str(SONG_CACHE_DIR / fname)
@@ -417,12 +379,9 @@ class MusicCog(commands.Cog):
                     logger.error(f"Downloaded file not found. Expected base: {expected_filename_base}")
                     return None
             else:
-                # If not cached and download is NOT requested, return metadata
-                # This allows the caller (play command) to know what song was found
-                # and then decide to download it.
                 return {
                     'title': data.get('title', 'Unknown Title'),
-                    'url': data.get('url'), # Might be None, but that's okay for now
+                    'url': data.get('url'),
                     'thumbnail': data.get('thumbnail'),
                     'duration': data.get('duration'),
                     'webpage_url': data.get('webpage_url', query),
@@ -433,18 +392,14 @@ class MusicCog(commands.Cog):
                     'was_previously_cached': False
                 }
 
-        # This catches errors from within run_yt_dlp_search or run_yt_dlp_extractor
         except Exception as e:
             if "Can't pickle" in str(e):
                  logger.critical(f"Pickling error encountered despite fix attempt for '{query}': {e}", exc_info=True)
-            # Catch errors from the yt-dlp process itself
             elif isinstance(e, yt_dlp.utils.DownloadError):
                  logger.error(f"yt-dlp DownloadError extracting info for '{query}': {e}")
-            # Handle pool shutdown errors
             elif isinstance(e, concurrent.futures.process.BrokenProcessPool):
                  logger.error(f"Process Pool Broken during info extraction for '{query}'. It might be shutting down or crashed: {e}")
             else:
-                # Log other unexpected exceptions from run_in_executor or within the target function
                 logger.exception(f"Unexpected error during info extraction process for '{query}': {e}")
             return None
 
@@ -459,10 +414,8 @@ class MusicCog(commands.Cog):
         if error:
             logger.error(f'Player error in guild {guild_id}: {error}')
 
-        # Check if the song was intentionally skipped
         was_skipped = self.current_song.get(guild_id, {}).get('was_skipped', False)
-        
-        # If the song finished naturally (wasn't skipped), mark it as completed
+
         if not was_skipped and self.current_song.get(guild_id):
             request_id = self.current_song[guild_id].get('request_id')
             if request_id:
@@ -475,11 +428,9 @@ class MusicCog(commands.Cog):
             self.last_activity[guild_id] = time.time()
             return
 
-        # Schedule the async playback on the bot's event loop
         future = asyncio.run_coroutine_threadsafe(
             self._play_next_async(guild_id), self.bot.loop
         )
-        # Log any exceptions that occur in the scheduled coroutine
         future.add_done_callback(
             lambda f: logger.error(f"Error in _play_next_async for guild {guild_id}: {f.exception()}") if f.exception() else None
         )
@@ -497,7 +448,6 @@ class MusicCog(commands.Cog):
             self.last_activity[guild_id] = time.time()
             return
 
-        # Get next song info from the queue
         next_song_info = queue.popleft()
         next_song_info['start_time'] = time.time()
         self.current_song[guild_id] = next_song_info
@@ -514,7 +464,6 @@ class MusicCog(commands.Cog):
 
         vc = self.voice_clients[guild_id]
         try:
-            # Use different FFmpeg options for local files vs streaming
             if next_song_info.get('is_cached', False):
                 local_ffmpeg_options = {
                     'executable': FFMPEG_EXECUTABLE
@@ -530,11 +479,11 @@ class MusicCog(commands.Cog):
         except discord.ClientException as e:
              logger.error(f"Discord ClientException while trying to play next in {guild_id}: {e}")
              self.current_song.pop(guild_id, None)
-             await self._play_next_async(guild_id)  # Recursive call to try next song
+             await self._play_next_async(guild_id)
         except Exception as e:
             logger.exception(f"Unexpected error during playback setup in {guild_id}: {e}")
             self.current_song.pop(guild_id, None)
-            await self._play_next_async(guild_id)  # Try next song on unexpected error
+            await self._play_next_async(guild_id)
 
 
     @commands.command(name='join', help='Joins the voice channel you are currently in.')
@@ -547,7 +496,7 @@ class MusicCog(commands.Cog):
 
         channel = ctx.author.voice.channel
         guild_id = ctx.guild.id
-        self.last_activity[guild_id] = time.time() # Update activity on join attempt
+        self.last_activity[guild_id] = time.time()
 
         if guild_id in self.voice_clients and self.voice_clients[guild_id].is_connected():
             if self.voice_clients[guild_id].channel == channel:
@@ -581,7 +530,6 @@ class MusicCog(commands.Cog):
             vc = self.voice_clients[guild_id]
             logger.info(f"Leaving channel {vc.channel.name} in guild {guild_id} by command.")
             await vc.disconnect()
-            # Clean up state for this guild
             self.voice_clients.pop(guild_id, None)
             self.queues.pop(guild_id, None)
             self.current_song.pop(guild_id, None)
@@ -595,14 +543,12 @@ class MusicCog(commands.Cog):
         """Plays audio from a YouTube or SoundCloud URL, or searches YouTube for a query."""
         logger.info(f"'play' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id}) with query: {query}")
         guild_id = ctx.guild.id
-        self.last_activity[guild_id] = time.time() # Update activity
+        self.last_activity[guild_id] = time.time()
 
-        # Ensure user is in a voice channel
         if ctx.author.voice is None:
             await ctx.send("You need to be in a voice channel to play music.")
             return
 
-        # Ensure bot is in a voice channel (or join the user's)
         user_channel = ctx.author.voice.channel
         
         # Check if we have a stale voice client reference (bot thinks it's not connected,
@@ -610,18 +556,14 @@ class MusicCog(commands.Cog):
         existing_guild_vc = ctx.guild.voice_client
         our_vc = self.voice_clients.get(guild_id)
         
-        # Determine if we need to connect
         need_to_connect = False
         if our_vc is None or not our_vc.is_connected():
-            # Our reference is missing or stale
             if existing_guild_vc is not None:
                 # Discord still has a voice client for us - could be reconnecting or in a weird state
                 if existing_guild_vc.is_connected():
-                    # Reuse the existing connection
                     logger.info(f"Reusing existing guild voice client for {guild_id}.")
                     self.voice_clients[guild_id] = existing_guild_vc
                 else:
-                    # It exists but isn't connected - clean it up and reconnect
                     logger.info(f"Cleaning up stale voice client for {guild_id} before reconnecting.")
                     try:
                         await existing_guild_vc.disconnect(force=True)
@@ -637,7 +579,6 @@ class MusicCog(commands.Cog):
             try:
                 self.voice_clients[guild_id] = await user_channel.connect()
             except discord.ClientException as e:
-                # Handle "Already connected" edge case - try to recover
                 if "Already connected" in str(e):
                     logger.warning(f"Already connected error in {guild_id}, attempting to recover...")
                     existing_vc = ctx.guild.voice_client
@@ -663,13 +604,11 @@ class MusicCog(commands.Cog):
         vc = self.voice_clients[guild_id]
         queue = self.get_queue(guild_id)
 
-        # Check if the query looks like a URL (starts with http)
-        query_stripped = query.strip()  # Use strip() to handle leading/trailing spaces
+        query_stripped = query.strip()
         is_url = query_stripped.startswith("http://") or query_stripped.startswith("https://")
         is_soundcloud = is_url and "soundcloud.com" in query_stripped.lower()
 
-        # Extract song info - Send status message conditionally
-        processing_message = None  # Keep track of the message if we send one
+        processing_message = None
         if is_url:
             if is_soundcloud:
                 processing_message = await ctx.send(f"Processing SoundCloud URL...")
@@ -677,18 +616,15 @@ class MusicCog(commands.Cog):
             else:
                 processing_message = await ctx.send(f"Processing URL...")
                 logger.info(f"Processing direct URL: {query_stripped}")
-            pass  # No searching message needed
         else:
             processing_message = await ctx.send(f"Searching for `{query_stripped}`...")
 
-        # First, search for the video without downloading to check cache
         song_info = await self._extract_info(query_stripped, download=False)
 
         if not song_info:
             await ctx.send(f"Could not find or process `{query}`. Please check the URL or search terms.")
             return
         
-        # Check if song exceeds maximum duration limit
         if isinstance(song_info, dict) and song_info.get('error') == 'duration_exceeded':
             title = song_info.get('title', 'Unknown Title')
             duration_str = self._format_duration(song_info.get('duration'))
@@ -707,14 +643,11 @@ class MusicCog(commands.Cog):
             await ctx.send(embed=embed)
             return
 
-        # If not cached, download the song
         if not song_info.get('is_cached', False):
             if processing_message:
-                # Use the title from the initial search if available
                 title = song_info.get('title', 'Unknown Title')
                 await processing_message.edit(content=f"Downloading **{title}**...")
-            
-            # Extract info again with download=True to actually download the file
+
             song_info = await self._extract_info(query_stripped, download=True)
             
             if not song_info:
@@ -722,7 +655,6 @@ class MusicCog(commands.Cog):
                 return
 
         try:
-            # Call the method on the db_manager instance
             request_id = self.db_manager.log_song_request(
                 user_id=ctx.author.id,
                 user_name=str(ctx.author),
@@ -738,7 +670,6 @@ class MusicCog(commands.Cog):
             # Log if the logging itself fails, but don't stop playback
             logger.error(f"Error occurred during song request logging via DB Manager: {e}", exc_info=True)
 
-        # Check if currently playing, paused, OR if current_song is set (might be transitioning)
         is_active = vc.is_playing() or vc.is_paused() or (guild_id in self.current_song and self.current_song[guild_id] is not None)
         if is_active:
              queue.append(song_info)
@@ -755,7 +686,6 @@ class MusicCog(commands.Cog):
                  embed.add_field(name="Source", value="🌐 Stream", inline=True)
              await ctx.send(embed=embed)
         else:
-            # Set start time *just before* playback
             song_info['start_time'] = time.time()
             self.current_song[guild_id] = song_info
             if 'request_id' in song_info:
@@ -764,7 +694,6 @@ class MusicCog(commands.Cog):
             logger.info(f"Playing immediately in guild {guild_id}: {song_info['title']}")
             logger.debug(f"Attempting to play URL: {song_info['url']}")
             try:
-                # Use different FFmpeg options for local files vs streaming
                 if song_info.get('is_cached', False):
                     local_ffmpeg_options = {
                         'executable': FFMPEG_EXECUTABLE
@@ -794,55 +723,47 @@ class MusicCog(commands.Cog):
             except discord.ClientException as e:
                 await ctx.send(f"Error starting playback: {e}")
                 logger.error(f"ClientException during initial play in {guild_id}: {e}")
-                self.current_song.pop(guild_id, None) # Clear current song if playback failed
+                self.current_song.pop(guild_id, None)
             except Exception as e:
                 await ctx.send("An unexpected error occurred while trying to play.")
                 logger.exception(f"Unexpected error during initial play in {guild_id}: {e}")
-                self.current_song.pop(guild_id, None) # Clear current song
+                self.current_song.pop(guild_id, None)
 
     @commands.command(name='skip', help='Skips the currently playing song.')
     async def skip(self, ctx: commands.Context):
         """Skips the current song."""
         logger.info(f"'skip' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
         guild_id = ctx.guild.id
-        self.last_activity[guild_id] = time.time() # Update activity
+        self.last_activity[guild_id] = time.time()
 
         if guild_id not in self.voice_clients or not self.voice_clients[guild_id].is_connected():
             await ctx.send("I'm not connected to a voice channel.")
             return
 
         vc = self.voice_clients[guild_id]
-        # Check actual playback state first
         if not vc.is_playing() and not vc.is_paused():
             await ctx.send("I am not playing anything right now.")
             return
 
-        # Then check our internal state as a fallback/confirmation
         current = self.current_song.get(guild_id)
         if not current:
              await ctx.send("There's no song currently marked as playing, but attempting to stop.")
-             # Try stopping anyway, might be in a weird state
-             vc.stop() # Will trigger _play_next if successful
+             vc.stop()
              return
         
-        # Check playback progress
         elapsed_time = time.time() - current.get('start_time', 0)
         duration = current.get('duration')
-        
-        # Handle case where duration is None
+
         if duration is None or duration <= 0 or (elapsed_time / duration) < 0.6:
-            # Less than 60% played, so mark as skipped
             if 'request_id' in current:
                 self.db_manager.update_play_status(current['request_id'], 'skipped')
         else:
-            # 60% or more played, so mark as completed
             if 'request_id' in current:
                 self.db_manager.update_play_status(current['request_id'], 'completed')
 
 
         logger.info(f"Skipping song in guild {guild_id} by command: {current['title']}")
         await ctx.send(f"Skipping: {current['title']}")
-        # Set a flag to indicate a skip was requested.
         # The 'after' callback (_play_next) will handle the rest.
         self.current_song[guild_id]['was_skipped'] = True
         vc.stop()
@@ -852,7 +773,7 @@ class MusicCog(commands.Cog):
         """Displays the song queue."""
         logger.info(f"'queue' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
         guild_id = ctx.guild.id
-        self.last_activity[guild_id] = time.time() # Update activity
+        self.last_activity[guild_id] = time.time()
 
         queue = self.get_queue(guild_id)
         current = self.current_song.get(guild_id)
@@ -872,8 +793,7 @@ class MusicCog(commands.Cog):
 
         if queue:
             queue_list = ""
-            # Limit display to avoid huge messages
-            for i, song in enumerate(list(queue)[:10]): # Show first 10 songs
+            for i, song in enumerate(list(queue)[:10]):
                 duration_str = self._format_duration(song.get('duration'))
                 queue_list += f"{i + 1}. [{song['title']}]({song['webpage_url']}) `[{duration_str}]`\n"
             if len(queue) > 10:
@@ -890,17 +810,15 @@ class MusicCog(commands.Cog):
         """Displays the current song and playback progress."""
         logger.info(f"'nowplaying' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
         guild_id = ctx.guild.id
-        self.last_activity[guild_id] = time.time() # Update activity
+        self.last_activity[guild_id] = time.time()
 
         vc = self.voice_clients.get(guild_id)
         current = self.current_song.get(guild_id)
 
-        # Check if connected and if something is marked as current
         if not vc or not vc.is_connected() or not current:
             await ctx.send("I am not playing anything right now.")
             return
 
-        # Check if actually playing or paused (more accurate state)
         if not vc.is_playing() and not vc.is_paused():
              await ctx.send("I am not playing anything right now (playback state inactive).")
              # Clear potentially stale current song info if state mismatch
@@ -920,15 +838,13 @@ class MusicCog(commands.Cog):
             # Note: This calculation might be slightly inaccurate if the bot was paused.
             # Implementing perfect pause handling requires more state tracking.
             elapsed_seconds = time.time() - start_time
-            # Clamp elapsed time to not exceed total duration
             elapsed_seconds = max(0, min(elapsed_seconds, total_duration))
 
             formatted_elapsed = self._format_duration(elapsed_seconds)
             formatted_total = self._format_duration(total_duration)
             progress_str = f"{formatted_elapsed} / {formatted_total}"
 
-             # Simple progress bar (optional)
-            bar_length = 20 # characters
+            bar_length = 20
             progress_ratio = elapsed_seconds / total_duration if total_duration > 0 else 0
             filled_length = int(bar_length * progress_ratio)
             bar = '█' * filled_length + '░' * (bar_length - filled_length)
@@ -942,7 +858,7 @@ class MusicCog(commands.Cog):
 
         state = "Playing"
         if vc.is_paused():
-            state = "Paused" # Add paused state info
+            state = "Paused"
 
         embed = discord.Embed(title=f"{state}: {title}", description=f"[{title}]({webpage_url})", color=discord.Color.green() if state == "Playing" else discord.Color.orange())
         if thumbnail:
@@ -951,7 +867,6 @@ class MusicCog(commands.Cog):
         embed.add_field(name="Progress", value=progress_str, inline=False)
 
         await ctx.send(embed=embed)
-        # Log potential inaccuracy if paused
         if vc.is_paused():
             logger.debug(f"NP command used while paused in guild {guild_id}. Displayed time may not reflect exact pause point.")
 
@@ -960,7 +875,7 @@ class MusicCog(commands.Cog):
         """Removes a song from the queue specified by its 1-based position."""
         logger.info(f"'remove' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id}) with position: {position}")
         guild_id = ctx.guild.id
-        self.last_activity[guild_id] = time.time() # Update activity
+        self.last_activity[guild_id] = time.time()
 
         queue = self.get_queue(guild_id)
 
@@ -968,17 +883,13 @@ class MusicCog(commands.Cog):
             await ctx.send("The queue is currently empty.")
             return
 
-        # Adjust position to be 0-based index for the deque
         index_to_remove = position - 1
 
         if 0 <= index_to_remove < len(queue):
             try:
-                # Convert deque to list temporarily for indexed removal if needed,
-                # though deques support `del queue[index]`
-                removed_song_info = queue[index_to_remove] # Access item by index
-                del queue[index_to_remove] # Deques support deletion by index
+                removed_song_info = queue[index_to_remove]
+                del queue[index_to_remove]
 
-                # Update status in DB to 'skipped'
                 if 'request_id' in removed_song_info:
                     self.db_manager.update_play_status(removed_song_info['request_id'], 'skipped')
                     logger.info(f"Updated status to 'skipped' for removed song with request_id: {removed_song_info['request_id']}")
@@ -1010,7 +921,7 @@ class MusicCog(commands.Cog):
         """Clears all songs from the queue."""
         logger.info(f"'clear' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
         guild_id = ctx.guild.id
-        self.last_activity[guild_id] = time.time() # Update activity
+        self.last_activity[guild_id] = time.time()
 
         queue = self.get_queue(guild_id)
         if not queue:
@@ -1029,34 +940,28 @@ class MusicCog(commands.Cog):
 
         logger.info(f"Stats command invoked by {ctx.author} for user {target_user} in guild {guild_id}")
 
-        # --- Fetch stats using the DatabaseManager ---
         try:
-            # Call the method on the db_manager instance, passing guild_id
             request_count = self.db_manager.get_user_stats(target_user.id, guild_id)
         except Exception as e:
              logger.error(f"Error getting stats via DB Manager for user {target_user.id} in guild {guild_id}: {e}", exc_info=True)
              await ctx.send("An error occurred while fetching stats.")
              return
 
-        # Send the result
         await ctx.send(f"📊 **{target_user.display_name}** has requested **{request_count}** track(s) in this server.")
 
     @stats.error
     async def stats_error(self, ctx: commands.Context, error: commands.CommandError):
         """Handles errors for the !stats command."""
         if isinstance(error, commands.MemberNotFound):
-            # 'argument' contains the raw string input that failed conversion
             user_input = error.argument
             await ctx.send(
                 f"Could not find a member matching '{user_input}' in this server. Please use their @mention, username#discriminator, or user ID.")
             logger.warning(f"MemberNotFound error in stats command: Input='{user_input}', Guild='{ctx.guild.id}'")
             error.handled = True
         elif isinstance(error, commands.CommandInvokeError):
-            # This catches errors *inside* the stats command logic (e.g., database errors that weren't caught)
             logger.error(f"Error during stats command execution: {error.original}", exc_info=True)
             await ctx.send("An unexpected error occurred while processing the stats command.")
         else:
-            # Handle other potential errors specific to this command if needed
             logger.error(f"Unhandled error in stats command: {error}", exc_info=True)
             await ctx.send("An error occurred processing the stats command.")
 
@@ -1087,16 +992,14 @@ class MusicCog(commands.Cog):
         for i, user_data in enumerate(top_users_data):
             rank = i + 1
             user_id = user_data['user_id']
-            db_user_name = user_data['user_name']  # Fallback name from DB
+            db_user_name = user_data['user_name']
             request_count = user_data['request_count']
 
-            # Try to find the member in the current guild for up-to-date name
             member = ctx.guild.get_member(user_id)
             display_name = member.display_name if member else db_user_name
-            # Add "(Not Found)" if member left server but is on leaderboard
             not_found_tag = "" if member else " *(user not in server)*"
 
-            rank_display = rank_emojis.get(rank, f"{rank}.")  # Use emoji or just rank number
+            rank_display = rank_emojis.get(rank, f"{rank}.")
             line = f"{rank_display} **{discord.utils.escape_markdown(display_name)}**{not_found_tag}: **{request_count}** requests"
             description_lines.append(line)
 
@@ -1165,11 +1068,9 @@ class MusicCog(commands.Cog):
         logger.info(f"Leaderboard race command invoked by {ctx.author} in guild {ctx.guild.id}")
         guild_id = ctx.guild.id
 
-        # Send initial status message
         status_msg = await ctx.send("🎬 Generating leaderboard race video... This may take a moment.")
 
         try:
-            # Fetch play history data
             play_data = self.db_manager.get_play_history_for_race(guild_id)
 
             if not play_data:
@@ -1180,7 +1081,6 @@ class MusicCog(commands.Cog):
                 await status_msg.edit(content="📊 Not enough play history to generate a race. Need at least 5 completed plays.")
                 return
 
-            # Generate the video in an executor to avoid blocking
             loop = asyncio.get_event_loop()
             output_path = await loop.run_in_executor(
                 None,
@@ -1191,7 +1091,6 @@ class MusicCog(commands.Cog):
                 await status_msg.edit(content="❌ Failed to generate the video. Please check the logs.")
                 return
 
-            # Send the video file
             await status_msg.edit(content="📤 Uploading video...")
             try:
                 with open(output_path, 'rb') as f:
@@ -1199,7 +1098,6 @@ class MusicCog(commands.Cog):
                     await ctx.send("🏆 **Leaderboard Race** - Watch the competition unfold!", file=video_file)
                 await status_msg.delete()
             finally:
-                # Clean up the temp file
                 try:
                     os.remove(output_path)
                     logger.debug(f"Cleaned up temp video file: {output_path}")
@@ -1226,11 +1124,9 @@ class MusicCog(commands.Cog):
         logger.info(f"Cumulative graph command invoked by {ctx.author} in guild {ctx.guild.id}")
         guild_id = ctx.guild.id
 
-        # Send initial status message
         status_msg = await ctx.send("📊 Generating cumulative graph... This may take a moment.")
 
         try:
-            # Fetch play history data
             play_data = self.db_manager.get_play_history_for_race(guild_id)
 
             if not play_data:
@@ -1241,7 +1137,6 @@ class MusicCog(commands.Cog):
                 await status_msg.edit(content="📊 Not enough play history to generate a graph. Need at least 5 completed plays.")
                 return
 
-            # Generate the graph in an executor to avoid blocking
             loop = asyncio.get_event_loop()
             output_path = await loop.run_in_executor(
                 None,
@@ -1252,7 +1147,6 @@ class MusicCog(commands.Cog):
                 await status_msg.edit(content="❌ Failed to generate the graph. Please check the logs.")
                 return
 
-            # Send the image file
             await status_msg.edit(content="📤 Uploading graph...")
             try:
                 with open(output_path, 'rb') as f:
@@ -1260,7 +1154,6 @@ class MusicCog(commands.Cog):
                     await ctx.send("📈 **Cumulative Song Plays** - Song plays over time by user", file=image_file)
                 await status_msg.delete()
             finally:
-                # Clean up the temp file
                 try:
                     os.remove(output_path)
                     logger.debug(f"Cleaned up temp graph file: {output_path}")
@@ -1285,22 +1178,19 @@ class MusicCog(commands.Cog):
     async def cache_info(self, ctx: commands.Context):
         """Displays information about the song cache."""
         logger.info(f"'cache' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
-        self.last_activity[ctx.guild.id] = time.time() # Update activity
+        self.last_activity[ctx.guild.id] = time.time()
         
         cache_size = len(self.song_cache)
         file_sizes_mb = []
         
-        # Calculate file sizes for statistics
         for file_path in self.song_cache.values():
             if os.path.exists(file_path):
                 try:
-                    file_size_mb = os.path.getsize(file_path) / (1024 * 1024)  # Convert to MB
+                    file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
                     file_sizes_mb.append(file_size_mb)
                 except (OSError, IOError):
-                    # Skip files that can't be accessed
                     continue
-        
-        # Calculate statistics
+
         if file_sizes_mb:
             total_size_mb = sum(file_sizes_mb)
             average_size_mb = total_size_mb / len(file_sizes_mb)
@@ -1333,22 +1223,18 @@ class MusicCog(commands.Cog):
         """Clears all cached songs."""
         logger.info(f"'clearcache' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
         
-        # Check for admin permission
         if not ctx.author.guild_permissions.administrator:
             await ctx.send("You need administrator permissions to use this command.")
             return
         
-        # Confirm with the user
         confirm_msg = await ctx.send("⚠️ This will delete all cached songs. Are you sure? Type `confirm` to proceed.")
         
         def check(m):
             return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == "confirm"
         
         try:
-            # Wait for confirmation
             await self.bot.wait_for('message', check=check, timeout=30.0)
-            
-            # Clear the cache
+
             cache_dir = SONG_CACHE_DIR
             if os.path.exists(cache_dir):
                 for filename in os.listdir(cache_dir):
@@ -1360,7 +1246,6 @@ class MusicCog(commands.Cog):
                         except Exception as e:
                             logger.error(f"Failed to delete {file_path}: {e}")
             
-            # Reset the cache dictionary
             self.song_cache.clear()
             
             await ctx.send("✅ Song cache has been cleared.")
@@ -1392,20 +1277,17 @@ class MusicCog(commands.Cog):
         if not vc or not vc.is_connected():
             return
 
-        # Check if the event happened in the bot's current channel
-        if before.channel == vc.channel and after.channel != vc.channel: # User left the bot's channel
-             # Check who is left in the channel
+        if before.channel == vc.channel and after.channel != vc.channel:
             human_members = [m for m in vc.channel.members if not m.bot]
 
             if not human_members:
                 logger.info(f"Voice channel {vc.channel.name} in guild {guild_id} is empty. Scheduling disconnect.")
                 # Introduce a small delay before disconnecting
                 # This helps prevent race conditions if someone quickly rejoins
-                await asyncio.sleep(10) # Wait 10 seconds
+                await asyncio.sleep(10)
 
-                # Re-check after the delay if the bot is still connected and channel still empty
-                vc = self.voice_clients.get(guild_id) # Get potentially updated vc state
-                if vc and vc.is_connected() and before.channel == vc.channel: # Ensure we're still in the *same* channel
+                vc = self.voice_clients.get(guild_id)
+                if vc and vc.is_connected() and before.channel == vc.channel:
                      current_human_members = [m for m in vc.channel.members if not m.bot]
                      if not current_human_members:
                          logger.info(f"Disconnecting from empty channel {vc.channel.name} in guild {guild_id} after delay.")
@@ -1422,31 +1304,25 @@ class MusicCog(commands.Cog):
                      logger.info(f"Disconnect cancelled for guild {guild_id}, state changed during delay.")
 
 
-    # --- Inactivity Check Task ---
-    @tasks.loop(minutes=1.0) # Check every minute
+    @tasks.loop(minutes=1.0)
     async def inactivity_check(self):
         """Periodically checks for inactive voice clients and disconnects them."""
         now = time.time()
         inactive_threshold = INACTIVITY_TIMEOUT_MINUTES * 60
 
-        # Iterate over a copy of keys to allow modification during iteration
         for guild_id in list(self.voice_clients.keys()):
             vc = self.voice_clients.get(guild_id)
             last_act = self.last_activity.get(guild_id)
 
-            # Check if VC exists, is connected, is not playing/paused, and has activity tracked
             if vc and vc.is_connected() and not vc.is_playing() and not vc.is_paused() and last_act:
                 if (now - last_act) > inactive_threshold:
                     logger.info(f"Disconnecting from guild {guild_id} due to inactivity.")
                     await vc.disconnect()
-                    # Clean up state for this guild
                     self.voice_clients.pop(guild_id, None)
                     self.queues.pop(guild_id, None)
                     self.current_song.pop(guild_id, None)
                     self.last_activity.pop(guild_id, None)
-                    # Consider sending a message to a default channel if possible
             elif vc and vc.is_connected() and (vc.is_playing() or vc.is_paused()):
-                # If playing or paused, reset the inactivity timer
                 self.last_activity[guild_id] = now
 
 
@@ -1456,14 +1332,13 @@ class MusicCog(commands.Cog):
         await self.bot.wait_until_ready()
         logger.info("Inactivity check loop ready.")
 
-    # --- Cog Error Handling ---
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
         """Handles errors specific to this cog."""
         if hasattr(error, 'handled') and error.handled:
             return
 
         if isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument)) and ctx.command.name == 'remove':
-             return # Already handled by remove_error
+             return
 
         logger.error(f"Error in command '{ctx.command.qualified_name if ctx.command else 'Unknown'}': {error}")
 
@@ -1476,22 +1351,18 @@ class MusicCog(commands.Cog):
         elif isinstance(error, commands.CheckFailure):
             await ctx.send("You don't have the necessary permissions to use this command.")
         elif isinstance(error, commands.CommandInvokeError):
-            # More serious errors during command execution
              await ctx.send(f"An error occurred while executing the command. Please check the logs or contact the admin. Error: {error.original}")
              logger.exception(f"CommandInvokeError in {ctx.command.qualified_name}: {error.original}")
         else:
-            # Generic error message for other cases
             await ctx.send(f"An unexpected error occurred: {error}")
 
 
-# --- Bot Event Handlers ---
 @bot.event
 async def on_ready():
     """
     Called when the bot is ready and connected to Discord.
     This can be called multiple times (e.g., on reconnect).
     """
-    # Clean up any orphaned songs from a previous session
     db_manager = DatabaseManager(DATABASE_FILE)
     db_manager.cleanup_queued_songs()
     
@@ -1503,7 +1374,6 @@ async def on_ready():
     logger.info('Bot is ready and online.')
     logger.info('-------------------')
     
-    # Set the bot's activity/presence
     await bot.change_presence(activity=discord.Game(name="Music | !help"))
 
 async def handle_logs(request):
@@ -1511,23 +1381,19 @@ async def handle_logs(request):
         import html
         from collections import deque
 
-        # Read only the most recent lines of the log file
         with open(LOG_FILE, 'r', encoding='utf-8') as f:
             last_lines = deque(f, 500)
             log_content = "".join(last_lines)
 
-        # Read the HTML template
         with open(LOG_VIEWER_TEMPLATE, 'r', encoding='utf-8') as f:
             html_template = f.read()
 
-        # Escape the log content and inject it into the template
         escaped_log_content = html.escape(log_content)
         final_html = html_template.replace('{log_content}', escaped_log_content)
 
         return web.Response(text=final_html, content_type='text/html', charset='utf-8')
 
     except FileNotFoundError as e:
-        # Handle either the log file or the template file not being found
         error_message = f"<h1>File Not Found</h1><p>Could not find: {e.filename}</p>"
         logger.error(f"Web server error: {e.filename} not found.")
         return web.Response(text=error_message, content_type='text/html', status=404)
@@ -1535,22 +1401,18 @@ async def handle_logs(request):
         logger.error(f"Error reading log file for web server: {e}")
         return web.Response(text=f"<h1>Error reading log file</h1><p>{e}</p>", content_type='text/html', status=500)
 
-# This handler triggers the graceful shutdown
 async def handle_shutdown(request):
     logger.info("Shutdown command received via web interface.")
     async def perform_shutdown():
-        # Inform Discord that the bot is going offline immediately
         await bot.change_presence(status=discord.Status.offline)
         # Add a tiny delay to ensure the presence update is sent before the websocket closes
         await asyncio.sleep(1)
         await bot.close()
 
-    # We create a task to close the bot. This allows us to send the HTTP
-    # response back to the browser before the application fully terminates.
+    # Creating a task lets the HTTP response return before shutdown completes.
     asyncio.create_task(perform_shutdown())
     return web.Response(text="Shutdown signal sent. The bot will now terminate gracefully.")
 
-# This function sets up and starts the aiohttp server
 async def start_web_server():
     app = web.Application()
     app.router.add_get("/", handle_logs)
@@ -1560,7 +1422,6 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, SERVER_HOST, SERVER_PORT)
     
-    # Use a try/finally block to ensure cleanup happens when the task is cancelled.
     try:
         await site.start()
         logger.info(f"--- Log server running on http://{SERVER_HOST}:{SERVER_PORT} ---")
@@ -1576,12 +1437,9 @@ async def main():
         logger.critical("DISCORD_BOT_TOKEN not found or not set correctly. Halting.")
         return
 
-    # Create tasks for the bot and the web server to run concurrently
     async with bot:
-        # Add the cog before starting
         await bot.add_cog(MusicCog(bot))
-        
-        # Start the web server as a background task
+
         web_server_task = asyncio.create_task(start_web_server())
         
         logger.info("Starting bot...")
@@ -1590,7 +1448,6 @@ async def main():
         except discord.LoginFailure:
             logger.critical("Login failed: Invalid Discord token provided.")
         finally:
-            # When bot.start() finishes (due to bot.close()), we ensure other tasks are cancelled.
             logger.info("Bot has been closed. Cleaning up remaining tasks.")
             if not web_server_task.done():
                 web_server_task.cancel()

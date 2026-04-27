@@ -7,7 +7,7 @@
             height: 100%; 
             margin: 0; 
             padding: 0; 
-            overflow: hidden; /* Prevents body scrollbars */
+            overflow: hidden;
         }
         body { 
             font-family: monospace; 
@@ -20,7 +20,7 @@
             white-space: pre-wrap; 
             word-wrap: break-word; 
             flex-grow: 1;
-            overflow-y: auto; /* Allow scrolling only on the pre element */
+            overflow-y: auto;
             margin: 0;
             padding: 10px;
         }
@@ -37,18 +37,14 @@
     </div>
     <pre id="log-content">{log_content}</pre>
     <script>
-        // This script now targets the 'pre' element for scrolling.
         var logContent = document.getElementById("log-content");
-        // Initial scroll to bottom.
         logContent.scrollTop = logContent.scrollHeight;
 
-        // Periodically fetch new logs
         setInterval(function() {
-            // Check if user is scrolled to the very bottom
             var isAtBottom = Math.ceil(logContent.scrollTop + logContent.clientHeight) >= logContent.scrollHeight - 10;
             
             if (!isAtBottom) {
-                return; // Don't fetch new logs if the user is reading history
+                return;
             }
 
             fetch(window.location.href)

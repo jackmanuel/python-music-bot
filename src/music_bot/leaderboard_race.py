@@ -1,4 +1,3 @@
-# leaderboard_race.py
 """
 Generates animated bar chart race videos showing user song play counts over time.
 Uses the bar_chart_race library to create MP4 animations from play history data.
@@ -7,7 +6,7 @@ Uses the bar_chart_race library to create MP4 animations from play history data.
 # IMPORTANT: Set matplotlib backend BEFORE any matplotlib imports
 # This prevents Tkinter threading conflicts in async environments like Discord bots
 import matplotlib
-matplotlib.use('Agg')  # Use headless backend (no GUI, thread-safe)
+matplotlib.use('Agg')
 
 import logging
 import os
@@ -18,7 +17,6 @@ from typing import List, Dict, Any, Optional
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# --- Monkey-patch bar_chart_race for pandas 3.0 compatibility ---
 # The bar_chart_race library (last updated 2020) uses deprecated fillna(method='ffill')
 # which was removed in pandas 3.0. This patch fixes it at runtime.
 import bar_chart_race._make_chart as _bcr_make_chart
@@ -45,7 +43,6 @@ def _patched_prepare_wide_data(df, orientation='h', sort='desc', n_bars=None,
         else:
             df_values.iloc[:, 0] = df_values.iloc[:, 0].interpolate()
     else:
-        # FIX: Use ffill() instead of fillna(method='ffill')
         df_values.iloc[:, 0] = df_values.iloc[:, 0].ffill()
     
     df_values = df_values.set_index(df_values.columns[0])
@@ -60,21 +57,18 @@ def _patched_prepare_wide_data(df, orientation='h', sort='desc', n_bars=None,
         return df_values, df_ranks
     return df_values
 
-# Apply the patch
 _bcr_make_chart.prepare_wide_data = _patched_prepare_wide_data
-# --- End monkey-patch ---
 
 import bar_chart_race as bcr
 
 logger = logging.getLogger(__name__)
 
-# Dark theme color constants (matching leaderboard_graph.py)
-DARK_BG_COLOR = '#1a1a2e'       # Figure background
-DARK_AXES_COLOR = '#16213e'     # Axes background
-DARK_TEXT_COLOR = 'white'       # Title text
-DARK_LABEL_COLOR = '#e0e0e0'    # Label text
-DARK_TICK_COLOR = '#b0b0b0'     # Tick text
-DARK_GRID_COLOR = '#4a4a6a'     # Grid and spine color
+DARK_BG_COLOR = '#1a1a2e'
+DARK_AXES_COLOR = '#16213e'
+DARK_TEXT_COLOR = 'white'
+DARK_LABEL_COLOR = '#e0e0e0'
+DARK_TICK_COLOR = '#b0b0b0'
+DARK_GRID_COLOR = '#4a4a6a'
 
 
 def generate_race_video(
@@ -106,41 +100,32 @@ def generate_race_video(
     logger.info(f"Generating bar chart race from {len(play_data)} play records...")
 
     try:
-        # Convert to DataFrame
         df = pd.DataFrame(play_data)
         df['request_timestamp'] = pd.to_datetime(df['request_timestamp'])
 
-        # Create a mapping of user_id to display name
         user_display_names = {}
         for record in play_data:
             user_id = record['user_id']
             if user_id not in user_display_names:
-                # Try to get current display name from guild
                 member = guild.get_member(user_id) if guild else None
                 if member:
                     user_display_names[user_id] = member.display_name
                 else:
-                    # Fall back to stored user_name (strip discriminator if present)
                     stored_name = record.get('user_name', f'User {user_id}')
                     # Handle old-style "username#0000" format
                     if '#' in stored_name:
                         stored_name = stored_name.split('#')[0]
                     user_display_names[user_id] = stored_name
 
-        # Map user_id to display name in the DataFrame
         df['display_name'] = df['user_id'].map(user_display_names)
 
-        # Resample to daily counts per user
         df['date'] = df['request_timestamp'].dt.date
         daily_counts = df.groupby(['date', 'display_name']).size().unstack(fill_value=0)
 
-        # Calculate cumulative sum over time
         cumulative_counts = daily_counts.cumsum()
 
-        # Ensure index is datetime for bar_chart_race
         cumulative_counts.index = pd.to_datetime(cumulative_counts.index)
 
-        # Filter to top N users by final count
         final_counts = cumulative_counts.iloc[-1].sort_values(ascending=False)
         top_users = final_counts.head(top_n).index.tolist()
         cumulative_counts = cumulative_counts[top_users]
@@ -149,22 +134,18 @@ def generate_race_video(
             logger.warning("No data available after processing for bar chart race.")
             return None
 
-        # Generate output file path
         if output_dir is None:
             output_dir = tempfile.gettempdir()
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = os.path.join(output_dir, f"leaderboard_race_{timestamp}.mp4")
 
-        # Determine date range for title
         start_date = cumulative_counts.index.min().strftime('%b %Y')
         end_date = cumulative_counts.index.max().strftime('%b %Y')
         guild_name = guild.name if guild else "Server"
 
         logger.info(f"Creating bar chart race animation with {len(top_users)} users...")
 
-        # Set up dark theme for matplotlib using rcParams
-        # This ensures bar_chart_race inherits our color scheme
         plt.style.use('dark_background')
         plt.rcParams.update({
             'figure.facecolor': DARK_BG_COLOR,
@@ -191,7 +172,6 @@ def generate_race_video(
         for spine in ax.spines.values():
             spine.set_color(DARK_GRID_COLOR)
         
-        # Set the title ourselves (bar_chart_race won't do it for pre-made figures)
         ax.set_title(
             f'{guild_name} Song Leaderboard Race\n{start_date} - {end_date}',
             fontsize=16,
@@ -200,14 +180,12 @@ def generate_race_video(
             pad=15
         )
 
-        # Create more margin at the top/bottom and significantly more on the left for names
         plt.subplots_adjust(top=0.82, bottom=0.25, right=0.90, left=0.20)
 
         # Manually set x-limit to ensure bar labels have space (since bcr skips this for pre-made figures)
         max_val = cumulative_counts.max().max()
         ax.set_xlim(0, max_val * 1.2) # Give 20% extra space for labels
 
-        # Generate the bar chart race with dark theme
         bcr.bar_chart_race(
             df=cumulative_counts,
             filename=output_path,
