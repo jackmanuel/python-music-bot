@@ -6,7 +6,7 @@ import discord
 from discord.ext import commands
 
 from youtube import FFMPEG_OPTIONS, video_url_from_entry
-from config import FFMPEG_EXECUTABLE
+from config import FFMPEG_EXECUTABLE, MAX_SONG_DURATION_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +15,13 @@ CANCEL_SEARCH_REACTION = "❌"
 
 
 class VoiceCommandsMixin:
+    def _should_download_to_cache(self, song_info):
+        return (
+            not song_info.get('is_cached', False)
+            and getattr(self, 'cache_downloads_enabled', True)
+            and not song_info.get('exceeds_cache_duration', False)
+        )
+
     @commands.command(name='join', help='Joins the voice channel you are currently in.')
     async def join(self, ctx: commands.Context):
         """Joins the invoker's voice channel."""
@@ -165,25 +172,15 @@ class VoiceCommandsMixin:
             await ctx.send("Video is a livestream, cannot play.")
             return
         
-        if isinstance(song_info, dict) and song_info.get('error') == 'duration_exceeded':
-            title = song_info.get('title', 'Unknown Title')
-            duration_str = self._format_duration(song_info.get('duration'))
-            max_duration_str = self._format_duration(song_info.get('max_duration'))
-            
-            embed = discord.Embed(
-                title="⚠️ Song Too Long",
-                description=f"**{title}** exceeds the maximum duration limit.",
-                color=discord.Color.red()
+        should_download = self._should_download_to_cache(song_info)
+        if song_info.get('exceeds_cache_duration', False) and not song_info.get('is_cached', False):
+            logger.info(
+                f"Streaming '{query_stripped}' instead of caching because its duration "
+                f"({song_info.get('duration')}s) exceeds the cache download limit "
+                f"({MAX_SONG_DURATION_SECONDS}s)."
             )
-            embed.add_field(name="Duration", value=duration_str, inline=True)
-            embed.add_field(name="Maximum Allowed", value=max_duration_str, inline=True)
-            embed.add_field(name="URL", value=f"[Link]({song_info.get('webpage_url')})", inline=False)
-            embed.set_footer(text="This limit helps save performance and disk space.")
-            
-            await ctx.send(embed=embed)
-            return
 
-        if not song_info.get('is_cached', False):
+        if should_download:
             if processing_message:
                 title = song_info.get('title', 'Unknown Title')
                 await processing_message.edit(content=f"Downloading **{title}**...")

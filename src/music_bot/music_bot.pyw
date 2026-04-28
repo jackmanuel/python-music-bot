@@ -6,7 +6,7 @@ import nacl
 import yt_dlp
 from discord.ext import commands
 
-from config import DISCORD_TOKEN, DATABASE_FILE, FFMPEG_EXECUTABLE, LOG_FILE, MAX_SONG_DURATION_SECONDS
+from config import CACHE_DOWNLOADS_ENABLED, DISCORD_TOKEN, DATABASE_FILE, FFMPEG_EXECUTABLE, LOG_FILE, MAX_SONG_DURATION_SECONDS
 from database_manager import DatabaseManager
 from formatting import format_duration
 from logging_config import setup_logging
@@ -21,9 +21,13 @@ def log_startup_configuration():
     logger.info(f"Database file located at: {DATABASE_FILE}")
     logger.info(f"Log file located at: {LOG_FILE}")
     logger.info(
-        f"Maximum song duration limit: {MAX_SONG_DURATION_SECONDS} seconds "
+        f"Maximum cache download duration: {MAX_SONG_DURATION_SECONDS} seconds "
         f"({format_duration(MAX_SONG_DURATION_SECONDS)})"
     )
+    if CACHE_DOWNLOADS_ENABLED:
+        logger.info("Cache mode: download missing songs and reuse existing cached songs.")
+    else:
+        logger.info("Cache mode: reuse existing cached songs, stream uncached songs.")
 
 intents = discord.Intents.default()
 intents.message_content = True

@@ -71,22 +71,13 @@ class PlaybackMixin:
                     'webpage_url': data.get('webpage_url', query)
                 }
 
-            duration = data.get('duration')
-            if duration and duration > MAX_SONG_DURATION_SECONDS:
-                logger.warning(f"Song '{data.get('title', 'Unknown')}' exceeds maximum duration limit "
-                             f"({duration}s > {MAX_SONG_DURATION_SECONDS}s)")
-                return {
-                    'error': 'duration_exceeded',
-                    'title': data.get('title', 'Unknown Title'),
-                    'duration': duration,
-                    'max_duration': MAX_SONG_DURATION_SECONDS,
-                    'webpage_url': data.get('webpage_url', query)
-                }
-
             youtube_id = data.get('id')
             if not youtube_id:
                 logger.warning(f"Could not extract YouTube ID for '{query}'.")
                 return None
+
+            duration = data.get('duration')
+            exceeds_cache_duration = bool(duration and duration > MAX_SONG_DURATION_SECONDS)
 
             cached_file = self.song_cache.get(youtube_id)
             if cached_file and os.path.exists(cached_file):
@@ -101,11 +92,32 @@ class PlaybackMixin:
                     'youtube_id': youtube_id,
                     'start_time': None,
                     'is_cached': True,
-                    'was_previously_cached': True
+                    'was_previously_cached': True,
+                    'exceeds_cache_duration': exceeds_cache_duration
                 }
                 return song_info
 
             if download:
+                if exceeds_cache_duration:
+                    logger.warning(
+                        f"Download requested for over-limit song '{query}' "
+                        f"({duration}s). Returning stream info instead of caching because "
+                        f"it exceeds the cache download limit ({MAX_SONG_DURATION_SECONDS}s)."
+                    )
+                    return {
+                        'title': data.get('title', 'Unknown Title'),
+                        'url': data.get('url'),
+                        'thumbnail': data.get('thumbnail'),
+                        'duration': data.get('duration'),
+                        'webpage_url': data.get('webpage_url', query),
+                        'channel': data.get('channel', 'Unknown Channel'),
+                        'youtube_id': youtube_id,
+                        'start_time': None,
+                        'is_cached': False,
+                        'was_previously_cached': False,
+                        'exceeds_cache_duration': True
+                    }
+
                 if getattr(self, 'is_shutting_down', False):
                     logger.info("Skipping download because shutdown is in progress.")
                     return None
@@ -165,7 +177,8 @@ class PlaybackMixin:
                         'youtube_id': youtube_id,
                         'start_time': None,
                         'is_cached': True,
-                        'was_previously_cached': False
+                        'was_previously_cached': False,
+                        'exceeds_cache_duration': False
                     }
                     return song_info
                 else:
@@ -182,7 +195,8 @@ class PlaybackMixin:
                     'youtube_id': youtube_id,
                     'start_time': None,
                     'is_cached': False,
-                    'was_previously_cached': False
+                    'was_previously_cached': False,
+                    'exceeds_cache_duration': exceeds_cache_duration
                 }
 
         except Exception as e:

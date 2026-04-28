@@ -9,11 +9,12 @@ I built this for my own Discord server, and I am open sourcing it mainly as a pr
 *   Plays YouTube audio from search terms, selected search results, or direct URLs.
 *   Supports SoundCloud URLs through the same `yt-dlp` backend.
 *   Caches downloaded songs locally by default so repeated plays can start faster and avoid duplicate downloads.
+*   Can run in a no-cache-download mode that reuses existing cached songs and streams uncached songs.
 *   Tracks every song request in a local SQLite database, including the requester, server, resolved title, URL, duration, and play status.
 *   Uses that play history for stats commands, leaderboards, an animated leaderboard race, and cumulative play graphs.
 *   Provides a small local web interface for live logs, restart, and shutdown.
 *   Automatically disconnects from empty or inactive voice channels.
-*   Rejects very long songs by default to keep downloads and cache size reasonable.
+*   Streams very long songs instead of downloading them, keeping cache size reasonable.
 
 ## Stats And Play History
 
@@ -64,11 +65,13 @@ Copy `.env.example` to `.env`, then set your Discord bot token:
 DISCORD_BOT_TOKEN=YOUR_BOT_TOKEN_HERE
 ```
 
-Optional settings, including a custom FFmpeg path and maximum song duration, are documented in `.env.example`.
+Optional settings, including a custom FFmpeg path and maximum cache download duration, are documented in `.env.example`.
 
 ### Running The Bot
 
-Double-click `start_bot.bat` to start the bot. The startup window closes after launch; ongoing monitoring and management happen through the local web interface.
+Run `start_bot.bat` to start the bot. The startup window closes after launch; ongoing monitoring and management happen through the local web interface.
+
+To avoid creating new cached song files, run `start_bot_no_cache.bat` instead. In this mode, the bot still uses songs already present in `song_cache/`, but streams anything that is not already cached. The same mode can also be enabled with `--no-cache` or `DISABLE_SONG_CACHE=true`.
 
 Open `http://localhost:8000` to view live logs, restart the bot, or shut it down. You can also run `stop_bot.bat` to send the same graceful shutdown request.
 

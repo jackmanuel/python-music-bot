@@ -29,8 +29,14 @@ async def close_bot_gracefully(bot):
     await bot.close()
 
 
-def schedule_restart():
+def build_restart_command():
     script_path = Path(sys.argv[0]).resolve()
+    return [sys.executable, str(script_path), *sys.argv[1:]]
+
+
+def schedule_restart():
+    restart_command = build_restart_command()
+    script_path = Path(restart_command[1])
     project_root = script_path.parents[2]
     restart_code = textwrap.dedent(
         f"""
@@ -44,7 +50,7 @@ def schedule_restart():
 
         time.sleep(3)
         subprocess.Popen(
-            [{sys.executable!r}, {str(script_path)!r}],
+            {restart_command!r},
             cwd={str(project_root)!r},
             close_fds=True,
             creationflags=creation_flags,

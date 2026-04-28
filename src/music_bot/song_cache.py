@@ -10,8 +10,9 @@ class SongCache:
 
     VALID_EXTENSIONS = ('.opus', '.m4a', '.webm', '.mp3', '.aac', '.wav')
 
-    def __init__(self, cache_dir: Path):
+    def __init__(self, cache_dir: Path, create_if_missing: bool = True):
         self.cache_dir = cache_dir
+        self.create_if_missing = create_if_missing
         self._songs = {}
         self.load()
 
@@ -34,7 +35,10 @@ class SongCache:
     def load(self):
         """Load existing song cache from the cache directory."""
         if not os.path.exists(self.cache_dir):
-            os.makedirs(self.cache_dir)
+            if self.create_if_missing:
+                os.makedirs(self.cache_dir)
+            else:
+                logger.info("Song cache directory does not exist; starting without a cache index.")
             return
 
         logger.info("Loading existing song cache...")

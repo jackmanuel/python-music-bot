@@ -27,5 +27,5 @@ The bot uses `!` as its command prefix.
 
 ## Cache
 
-*   `!cache`: Shows the number of cached songs and approximate cache size.
+*   `!cache`: Shows the number of cached songs, approximate cache size, and active cache mode.
 *   `!clearcache`: Clears cached `.opus` files. Requires administrator permissions and a typed confirmation.

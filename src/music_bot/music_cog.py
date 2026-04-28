@@ -6,7 +6,7 @@ from collections import deque
 from discord.ext import commands
 
 from cache_commands_mixin import CacheCommandsMixin
-from config import DATABASE_FILE, SONG_CACHE_DIR
+from config import CACHE_DOWNLOADS_ENABLED, DATABASE_FILE, SONG_CACHE_DIR
 from database_manager import DatabaseManager
 from formatting import format_duration
 from playback_mixin import PlaybackMixin
@@ -35,7 +35,12 @@ class MusicCog(
         self.voice_clients = {}
         self.last_activity = {}
         self.is_shutting_down = False
-        self.song_cache = SongCache(SONG_CACHE_DIR)
+        self.cache_downloads_enabled = CACHE_DOWNLOADS_ENABLED
+        self.song_cache = SongCache(SONG_CACHE_DIR, create_if_missing=self.cache_downloads_enabled)
+        if self.cache_downloads_enabled:
+            logger.info("Song cache downloads are enabled.")
+        else:
+            logger.info("Song cache downloads are disabled; existing cached songs will still be used.")
         cpu_cores = os.cpu_count() or 1
         max_workers = max(1, cpu_cores // 4)
         logger.info(f"Initializing ProcessPoolExecutor with max_workers={max_workers}")

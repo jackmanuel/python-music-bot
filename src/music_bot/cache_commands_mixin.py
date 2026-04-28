@@ -45,8 +45,8 @@ class CacheCommandsMixin:
 
         embed.add_field(name="Cached Songs", value=f"{cache_size} songs", inline=True)
         embed.add_field(name="Total Size", value=f"{total_size_mb:.2f} MB", inline=True)
-
-        embed.add_field(name="\u200b", value="\u200b", inline=True)
+        cache_mode = "Downloads enabled" if getattr(self, 'cache_downloads_enabled', True) else "Streaming uncached songs"
+        embed.add_field(name="Cache Mode", value=cache_mode, inline=True)
 
         embed.add_field(name="Average Size", value=f"{average_size_mb:.2f} MB", inline=True)
         embed.add_field(name="Largest File", value=f"{largest_size_mb:.2f} MB", inline=True)

@@ -31,4 +31,5 @@ database/
 
 # But include the essential application runner scripts
 !start_bot.bat
+!start_bot_no_cache.bat
 !stop_bot.bat
