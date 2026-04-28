@@ -5,10 +5,13 @@ import time
 import discord
 from discord.ext import commands
 
-from youtube import FFMPEG_OPTIONS
+from youtube import FFMPEG_OPTIONS, video_url_from_entry
 from config import FFMPEG_EXECUTABLE
 
 logger = logging.getLogger(__name__)
+
+SEARCH_REACTION_CHOICES = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+CANCEL_SEARCH_REACTION = "❌"
 
 
 class VoiceCommandsMixin:
@@ -273,6 +276,93 @@ class VoiceCommandsMixin:
                 await ctx.send("An unexpected error occurred while trying to play.")
                 logger.exception(f"Unexpected error during initial play in {guild_id}: {e}")
                 self.current_song.pop(guild_id, None)
+
+    @commands.command(name='search', aliases=['select'], help='Shows the top 5 YouTube results and lets you choose one with a reaction.')
+    async def search(self, ctx: commands.Context, *, query: str):
+        """Searches YouTube and lets the user choose which result to play."""
+        logger.info(f"'search' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id}) with query: {query}")
+        guild_id = ctx.guild.id
+        self.last_activity[guild_id] = time.time()
+
+        if getattr(self, 'is_shutting_down', False):
+            await ctx.send("The bot is shutting down. Please try again after it restarts.")
+            return
+
+        query_stripped = query.strip()
+        if not query_stripped:
+            await ctx.send("Please provide something to search for.")
+            return
+
+        processing_message = await ctx.send(f"Searching for `{discord.utils.escape_markdown(query_stripped)}`...")
+        results = await self._search_results(query_stripped, result_count=len(SEARCH_REACTION_CHOICES))
+
+        if getattr(self, 'is_shutting_down', False):
+            return
+
+        if not results:
+            await processing_message.edit(content=f"Could not find results for `{discord.utils.escape_markdown(query_stripped)}`.")
+            return
+
+        options = []
+        for index, entry in enumerate(results, start=1):
+            title = discord.utils.escape_markdown(entry.get('title', 'Unknown Title'))
+            channel = discord.utils.escape_markdown(entry.get('channel') or entry.get('uploader') or 'Unknown Channel')
+            duration = entry.get('duration_string')
+            if not duration and entry.get('duration'):
+                duration = self._format_duration(entry.get('duration'))
+            duration_label = f" [{duration}]" if duration else ""
+            options.append(f"{SEARCH_REACTION_CHOICES[index - 1]} **{title}**{duration_label}\n{channel}")
+
+        embed = discord.Embed(
+            title="Search Results",
+            description="\n\n".join(options),
+            color=discord.Color.blurple()
+        )
+        embed.set_footer(text=f"React with 1-{len(results)} to choose, or X to cancel. Selection times out in 60 seconds.")
+        await processing_message.edit(content=None, embed=embed)
+
+        available_reactions = SEARCH_REACTION_CHOICES[:len(results)]
+        for emoji in [*available_reactions, CANCEL_SEARCH_REACTION]:
+            try:
+                await processing_message.add_reaction(emoji)
+            except discord.HTTPException as e:
+                logger.warning(f"Failed to add search selection reaction {emoji}: {e}")
+
+        def reaction_check(reaction, user):
+            return (
+                user.id == ctx.author.id
+                and reaction.message.id == processing_message.id
+                and str(reaction.emoji) in [*available_reactions, CANCEL_SEARCH_REACTION]
+            )
+
+        try:
+            reaction, _ = await self.bot.wait_for('reaction_add', timeout=60.0, check=reaction_check)
+        except asyncio.TimeoutError:
+            await processing_message.edit(content="Search selection timed out.", embed=None)
+            return
+
+        selected_emoji = str(reaction.emoji)
+        if selected_emoji == CANCEL_SEARCH_REACTION:
+            await processing_message.edit(content="Search cancelled.", embed=None)
+            return
+
+        selected_index = available_reactions.index(selected_emoji)
+        selected_entry = results[selected_index]
+        selected_url = video_url_from_entry(selected_entry)
+        if not selected_url:
+            await processing_message.edit(content="I could not get a playable URL for that result.", embed=None)
+            return
+
+        selected_title = discord.utils.escape_markdown(selected_entry.get('title', 'Unknown Title'))
+        await processing_message.edit(content=f"Selected **{selected_title}**.", embed=None)
+
+        play_command = self.bot.get_command('play')
+        if not play_command:
+            await ctx.send("The play command is not available.")
+            logger.error("Could not invoke play command from search: play command not found.")
+            return
+
+        await ctx.invoke(play_command, query=selected_url)
 
     @commands.command(name='skip', help='Skips the currently playing song.')
     async def skip(self, ctx: commands.Context):

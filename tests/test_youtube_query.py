@@ -13,6 +13,7 @@ from youtube import (
     is_livestream_info,
     prepare_yt_dlp_query,
     select_first_video_entry,
+    select_video_entries,
     video_url_from_entry,
 )
 
@@ -69,6 +70,43 @@ class YoutubeQueryTests(unittest.TestCase):
 
         assert selected is not None
         self.assertEqual(video_url_from_entry(selected), "https://www.youtube.com/watch?v=0cZ8-RgtrP0")
+
+    def test_search_results_selection_returns_top_playable_videos(self):
+        results = select_video_entries(
+            [
+                {
+                    "id": "UCeSL5leXCREGvpDpoWcSb8g",
+                    "title": "Matt Ox",
+                    "url": "https://www.youtube.com/channel/UCeSL5leXCREGvpDpoWcSb8g",
+                    "ie_key": "YoutubeTab",
+                    "_type": "url",
+                },
+                {
+                    "id": "0cZ8-RgtrP0",
+                    "title": "MATT OX - Overwhelming",
+                    "url": "https://www.youtube.com/watch?v=0cZ8-RgtrP0",
+                    "ie_key": "Youtube",
+                    "_type": "url",
+                },
+                {
+                    "id": "pAm1PDrfi4o",
+                    "title": "XXXTENTACION & MATT OX - $$$",
+                    "url": "https://www.youtube.com/watch?v=pAm1PDrfi4o",
+                    "ie_key": "Youtube",
+                    "_type": "url",
+                },
+                {
+                    "id": "skipped",
+                    "title": "Skipped by limit",
+                    "url": "https://www.youtube.com/watch?v=skipped",
+                    "ie_key": "Youtube",
+                    "_type": "url",
+                },
+            ],
+            limit=2,
+        )
+
+        self.assertEqual([entry["id"] for entry in results], ["0cZ8-RgtrP0", "pAm1PDrfi4o"])
 
     def test_livestream_info_detects_active_livestreams(self):
         self.assertTrue(is_livestream_info({"is_live": True}))

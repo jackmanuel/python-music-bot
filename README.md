@@ -82,6 +82,7 @@ The bot includes a simple web interface accessible from your browser.
 
 *   `!join`: Bot joins your voice channel.
 *   `!play <song name or URL>`: Searches YouTube or plays from YouTube/SoundCloud URLs.
+*   `!search <song name>`: Shows the top 5 YouTube results so you can choose one with a reaction.
 *   `!skip`: Skips the current song.
 *   `!queue` or `!q`: Shows the current song queue.
 *   `!np`: Shows the currently playing song and its progress.

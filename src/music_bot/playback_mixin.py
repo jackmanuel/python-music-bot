@@ -8,12 +8,33 @@ import discord
 import yt_dlp
 
 from config import FFMPEG_EXECUTABLE, MAX_SONG_DURATION_SECONDS, SONG_CACHE_DIR
-from youtube import FFMPEG_OPTIONS, is_livestream_info, run_yt_dlp_extractor, run_yt_dlp_search
+from youtube import FFMPEG_OPTIONS, is_livestream_info, run_yt_dlp_extractor, run_yt_dlp_search, run_yt_dlp_search_results
 
 logger = logging.getLogger(__name__)
 
 
 class PlaybackMixin:
+    async def _search_results(self, query, result_count=5):
+        """Searches yt-dlp for flat video results without blocking the event loop."""
+        if getattr(self, 'is_shutting_down', False):
+            logger.info("Skipping search results because shutdown is in progress.")
+            return []
+
+        loop = asyncio.get_event_loop()
+        try:
+            logger.debug(f"Submitting yt-dlp result search for '{query}' to process pool.")
+            results = await loop.run_in_executor(
+                self.process_executor,
+                run_yt_dlp_search_results,
+                query,
+                result_count
+            )
+            logger.debug(f"Successfully retrieved {len(results)} search result(s) for '{query}'.")
+            return results
+        except Exception as e:
+            logger.exception(f"Unexpected error while searching for '{query}': {e}")
+            return []
+
     async def _extract_info(self, query, download=False):
         """Extracts info using yt-dlp in an executor to avoid blocking."""
         if getattr(self, 'is_shutting_down', False):

@@ -130,6 +130,11 @@ def select_first_video_entry(entries: list[dict]) -> dict | None:
     return next((entry for entry in entries if entry and is_video_entry(entry)), None)
 
 
+def select_video_entries(entries: list[dict], limit: int = SEARCH_RESULT_COUNT) -> list[dict]:
+    """Return the first playable YouTube video entries from a flat search result."""
+    return [entry for entry in entries if entry and is_video_entry(entry)][:limit]
+
+
 def get_yt_dlp_logger() -> logging.Logger:
     """Keep yt-dlp output quiet enough that bad inputs cannot balloon logs."""
     ydl_logger = logging.getLogger('yt-dlp')
@@ -195,4 +200,36 @@ def run_yt_dlp_search(query):
         return data
     except Exception as e:
         logger.error("Error within run_yt_dlp_search for query %r: %s", query, e)
+        raise
+
+
+def run_yt_dlp_search_results(query, result_count: int = SEARCH_RESULT_COUNT):
+    """Runs yt-dlp and returns flat playable video search results."""
+    try:
+        requested_count = result_count * 2
+        search_options = {
+            'format': 'bestaudio/best',
+            'restrictfilenames': True,
+            'noplaylist': True,
+            'nocheckcertificate': True,
+            'ignoreerrors': False,
+            'logtostderr': False,
+            'quiet': True,
+            'no_warnings': True,
+            'default_search': f'ytsearch{requested_count}:',
+            'source_address': '0.0.0.0',
+            'logger': get_yt_dlp_logger(),
+            'js_runtimes': JS_RUNTIMES,
+            'remote_components': REMOTE_COMPONENTS,
+            'extract_flat': 'in_playlist',
+            'playlist_items': f"1-{requested_count}",
+        }
+        prepared_query = prepare_yt_dlp_query(query, search_count=requested_count)
+
+        with yt_dlp.YoutubeDL(search_options) as ydl:
+            data = ydl.extract_info(prepared_query, download=False)
+
+        return select_video_entries(data.get('entries') or [], limit=result_count)
+    except Exception as e:
+        logger.error("Error within run_yt_dlp_search_results for query %r: %s", query, e)
         raise
