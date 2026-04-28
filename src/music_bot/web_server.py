@@ -35,12 +35,25 @@ async def handle_logs(request):
 
 async def handle_shutdown(request):
     bot = request.app["bot"]
+    if request.app.get("shutdown_requested"):
+        return web.Response(text="Shutdown is already in progress.")
+
+    request.app["shutdown_requested"] = True
     logger.info("Shutdown command received via web interface.")
+
     async def perform_shutdown():
-        await bot.change_presence(status=discord.Status.offline)
-        # Add a tiny delay to ensure the presence update is sent before the websocket closes
-        await asyncio.sleep(1)
-        await bot.close()
+        try:
+            for cog in bot.cogs.values():
+                begin_shutdown = getattr(cog, "begin_shutdown", None)
+                if begin_shutdown:
+                    begin_shutdown()
+
+            await bot.change_presence(status=discord.Status.offline)
+            # Add a tiny delay to ensure the presence update is sent before the websocket closes
+            await asyncio.sleep(1)
+            await bot.close()
+        except Exception:
+            logger.exception("Error while shutting down the bot.")
 
     # Creating a task lets the HTTP response return before shutdown completes.
     asyncio.create_task(perform_shutdown())

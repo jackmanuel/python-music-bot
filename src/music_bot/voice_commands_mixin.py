@@ -71,6 +71,10 @@ class VoiceCommandsMixin:
         guild_id = ctx.guild.id
         self.last_activity[guild_id] = time.time()
 
+        if getattr(self, 'is_shutting_down', False):
+            await ctx.send("The bot is shutting down. Please try again after it restarts.")
+            return
+
         if ctx.author.voice is None:
             await ctx.send("You need to be in a voice channel to play music.")
             return
@@ -147,6 +151,9 @@ class VoiceCommandsMixin:
 
         song_info = await self._extract_info(query_stripped, download=False)
 
+        if getattr(self, 'is_shutting_down', False):
+            return
+
         if not song_info:
             await ctx.send(f"Could not find or process `{query}`. Please check the URL or search terms.")
             return
@@ -174,7 +181,11 @@ class VoiceCommandsMixin:
                 title = song_info.get('title', 'Unknown Title')
                 await processing_message.edit(content=f"Downloading **{title}**...")
 
-            song_info = await self._extract_info(query_stripped, download=True)
+            download_query = song_info.get('webpage_url') or query_stripped
+            song_info = await self._extract_info(download_query, download=True)
+
+            if getattr(self, 'is_shutting_down', False):
+                return
             
             if not song_info:
                 await ctx.send(f"Failed to download `{query}`. Please try again.")

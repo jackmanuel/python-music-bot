@@ -34,6 +34,7 @@ class MusicCog(
         self.current_song = {}
         self.voice_clients = {}
         self.last_activity = {}
+        self.is_shutting_down = False
         self.song_cache = SongCache(SONG_CACHE_DIR)
         cpu_cores = os.cpu_count() or 1
         max_workers = max(1, cpu_cores // 4)
@@ -47,11 +48,15 @@ class MusicCog(
 
         self.inactivity_check.start()
 
+    def begin_shutdown(self):
+        self.is_shutting_down = True
+
     def cog_unload(self):
+        self.begin_shutdown()
         logger.info("Shutting down ProcessPoolExecutor...")
-        self.process_executor.shutdown(wait=True)
+        self.process_executor.shutdown(wait=False, cancel_futures=True)
         logger.info("Shutting down ThreadPoolExecutor...")
-        self.thread_executor.shutdown(wait=True)
+        self.thread_executor.shutdown(wait=False, cancel_futures=True)
         logger.info("Cancelling inactivity check task.")
         self.inactivity_check.cancel()
 

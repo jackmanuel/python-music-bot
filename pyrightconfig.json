@@ -1,0 +1,13 @@
+{
+  "extraPaths": ["src/music_bot"],
+  "typeCheckingMode": "off",
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.*",
+    ".venv",
+    "database",
+    "logs",
+    "song_cache"
+  ]
+}

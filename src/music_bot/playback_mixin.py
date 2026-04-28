@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 class PlaybackMixin:
     async def _extract_info(self, query, download=False):
         """Extracts info using yt-dlp in an executor to avoid blocking."""
+        if getattr(self, 'is_shutting_down', False):
+            logger.info("Skipping info extraction because shutdown is in progress.")
+            return None
+
         loop = asyncio.get_event_loop()
         try:
             logger.debug(f"Submitting yt-dlp search for '{query}' to process pool.")
@@ -25,6 +29,10 @@ class PlaybackMixin:
                 query
             )
             logger.debug(f"Successfully retrieved search data for '{query}' from process pool.")
+
+            if getattr(self, 'is_shutting_down', False):
+                logger.info("Discarding extracted info because shutdown is in progress.")
+                return None
 
             if not data:
                 logger.warning(f"Search returned no data for '{query}'.")
@@ -69,6 +77,10 @@ class PlaybackMixin:
                 return song_info
 
             if download:
+                if getattr(self, 'is_shutting_down', False):
+                    logger.info("Skipping download because shutdown is in progress.")
+                    return None
+
                 logger.info(f"Downloading '{query}' to cache...")
                 # Use ThreadPoolExecutor for downloads to avoid pickling issues
                 downloaded_data = await loop.run_in_executor(
@@ -77,6 +89,10 @@ class PlaybackMixin:
                     query,
                     True
                 )
+
+                if getattr(self, 'is_shutting_down', False):
+                    logger.info("Discarding downloaded info because shutdown is in progress.")
+                    return None
                 
                 # Dynamic filename check
                 # When downloading from a search, yt-dlp returns the search wrapper in 'entries'
@@ -159,6 +175,10 @@ class PlaybackMixin:
         It schedules the async _play_next_async coroutine to handle
         the actual playback setup (since FFmpegOpusAudio.from_probe is async).
         """
+        if getattr(self, 'is_shutting_down', False):
+            logger.info(f"Not starting next song in guild {guild_id}; shutdown is in progress.")
+            return
+
         if error:
             logger.error(f'Player error in guild {guild_id}: {error}')
 
@@ -189,6 +209,10 @@ class PlaybackMixin:
         Uses FFmpegOpusAudio.from_probe() which probes the file to detect
         its codec and can passthrough Opus audio directly without re-encoding.
         """
+        if getattr(self, 'is_shutting_down', False):
+            logger.info(f"Not starting next song in guild {guild_id}; shutdown is in progress.")
+            return
+
         queue = self.get_queue(guild_id)
         if not queue:
             logger.info(f"Queue empty for guild {guild_id} (async check).")
@@ -232,4 +256,3 @@ class PlaybackMixin:
             logger.exception(f"Unexpected error during playback setup in {guild_id}: {e}")
             self.current_song.pop(guild_id, None)
             await self._play_next_async(guild_id)
-
