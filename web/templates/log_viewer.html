@@ -24,21 +24,101 @@
             margin: 0;
             padding: 10px;
         }
+        .actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .header-info {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+        }
+        .uptime {
+            color: #b8c7d9;
+            font-family: sans-serif;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        .actions form {
+            margin: 0;
+        }
+        .actions button {
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            cursor: pointer;
+            border-radius: 4px;
+            font-weight: bold;
+            font-family: sans-serif;
+        }
+        .restart-button {
+            background-color: #0275d8;
+        }
+        .shutdown-button {
+            background-color: #d9534f;
+        }
     </style>
 </head>
 <body>
     <div style="background-color: #333; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #555;">
-        <h3 style="margin: 0; font-family: sans-serif;">Music Bot Logs</h3>
-        <form method="POST" action="/shutdown" onsubmit="return confirm('Are you sure you want to shut down the bot?');" style="margin: 0;">
-            <button type="submit" style="background-color: #d9534f; color: white; border: none; padding: 8px 16px; cursor: pointer; border-radius: 4px; font-weight: bold; font-family: sans-serif;">
-                Shutdown Bot
-            </button>
-        </form>
+        <div class="header-info">
+            <h3 style="margin: 0; font-family: sans-serif;">Music Bot Logs</h3>
+            <span class="uptime">Uptime: <span id="uptime" data-uptime-seconds="{uptime_seconds}">--</span></span>
+        </div>
+        <div class="actions">
+            <form method="POST" action="/restart" onsubmit="return confirm('Are you sure you want to restart the bot?');">
+                <button type="submit" class="restart-button">
+                    Restart Bot
+                </button>
+            </form>
+            <form method="POST" action="/shutdown" onsubmit="return confirm('Are you sure you want to shut down the bot?');">
+                <button type="submit" class="shutdown-button">
+                    Shutdown Bot
+                </button>
+            </form>
+        </div>
     </div>
     <pre id="log-content">{log_content}</pre>
     <script>
         var logContent = document.getElementById("log-content");
+        var uptime = document.getElementById("uptime");
         logContent.scrollTop = logContent.scrollHeight;
+
+        function formatUptime(totalSeconds) {
+            var days = Math.floor(totalSeconds / 86400);
+            var hours = Math.floor((totalSeconds % 86400) / 3600);
+            var minutes = Math.floor((totalSeconds % 3600) / 60);
+            var seconds = totalSeconds % 60;
+            var parts = [];
+
+            if (days > 0) {
+                parts.push(days + "d");
+            }
+
+            if (hours > 0 || days > 0) {
+                parts.push(hours + "h");
+            }
+
+            parts.push(minutes + "m");
+            parts.push(seconds + "s");
+            return parts.join(" ");
+        }
+
+        function renderUptime() {
+            var uptimeSeconds = parseInt(uptime.dataset.uptimeSeconds, 10);
+            if (isNaN(uptimeSeconds)) {
+                return;
+            }
+
+            uptime.textContent = formatUptime(uptimeSeconds);
+        }
+
+        renderUptime();
+        setInterval(function() {
+            uptime.dataset.uptimeSeconds = String(parseInt(uptime.dataset.uptimeSeconds, 10) + 1);
+            renderUptime();
+        }, 1000);
 
         setInterval(function() {
             var isAtBottom = Math.ceil(logContent.scrollTop + logContent.clientHeight) >= logContent.scrollHeight - 10;
@@ -53,6 +133,12 @@
                     var parser = new DOMParser();
                     var doc = parser.parseFromString(html, "text/html");
                     var newPre = doc.getElementById("log-content");
+                    var newUptime = doc.getElementById("uptime");
+
+                    if (newUptime) {
+                        uptime.dataset.uptimeSeconds = newUptime.dataset.uptimeSeconds;
+                        renderUptime();
+                    }
                     
                     if (newPre && newPre.innerHTML !== logContent.innerHTML) {
                         logContent.innerHTML = newPre.innerHTML;
