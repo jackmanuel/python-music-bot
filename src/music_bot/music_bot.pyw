@@ -13,21 +13,17 @@ from logging_config import setup_logging
 from music_cog import MusicCog
 from web_server import start_web_server
 
-setup_logging(log_file_path=LOG_FILE)
 logger = logging.getLogger(__name__)
 
-logger.info(f"Using FFmpeg executable located at: {FFMPEG_EXECUTABLE}")
-logger.info(f"Database file located at: {DATABASE_FILE}")
-logger.info(f"Log file located at: {LOG_FILE}")
-logger.info(
-    f"Maximum song duration limit: {MAX_SONG_DURATION_SECONDS} seconds "
-    f"({format_duration(MAX_SONG_DURATION_SECONDS)})"
-)
 
-if not DISCORD_TOKEN:
-    print("CRITICAL ERROR: DISCORD_BOT_TOKEN not found in environment variables.")
-    print("Make sure you have a .env file with DISCORD_BOT_TOKEN=YOUR_TOKEN")
-    exit()
+def log_startup_configuration():
+    logger.info(f"Using FFmpeg executable located at: {FFMPEG_EXECUTABLE}")
+    logger.info(f"Database file located at: {DATABASE_FILE}")
+    logger.info(f"Log file located at: {LOG_FILE}")
+    logger.info(
+        f"Maximum song duration limit: {MAX_SONG_DURATION_SECONDS} seconds "
+        f"({format_duration(MAX_SONG_DURATION_SECONDS)})"
+    )
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -76,6 +72,9 @@ async def main():
 
 
 if __name__ == "__main__":
+    setup_logging(log_file_path=LOG_FILE)
+    log_startup_configuration()
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
