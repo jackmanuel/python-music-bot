@@ -8,7 +8,7 @@ import discord
 import yt_dlp
 
 from config import FFMPEG_EXECUTABLE, MAX_SONG_DURATION_SECONDS, SONG_CACHE_DIR
-from youtube import FFMPEG_OPTIONS, run_yt_dlp_extractor, run_yt_dlp_search
+from youtube import FFMPEG_OPTIONS, is_livestream_info, run_yt_dlp_extractor, run_yt_dlp_search
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,14 @@ class PlaybackMixin:
             if 'entries' in data:
                 logger.info(f"Found multiple entries for '{query}', using first result.")
                 data = data['entries'][0]
+
+            if is_livestream_info(data):
+                logger.warning(f"Refusing livestream '{data.get('title', 'Unknown')}' for query '{query}'.")
+                return {
+                    'error': 'livestream',
+                    'title': data.get('title', 'Unknown Title'),
+                    'webpage_url': data.get('webpage_url', query)
+                }
 
             duration = data.get('duration')
             if duration and duration > MAX_SONG_DURATION_SECONDS:

@@ -108,6 +108,12 @@ def is_video_entry(entry: dict) -> bool:
     return ie_key == "youtube" or "youtube.com/watch" in entry_url or "youtu.be/" in entry_url
 
 
+def is_livestream_info(info: dict) -> bool:
+    """Return True when yt-dlp metadata identifies a live YouTube stream."""
+    live_status = (info.get("live_status") or "").lower()
+    return info.get("is_live") is True or live_status == "is_live"
+
+
 def video_url_from_entry(entry: dict) -> str | None:
     entry_url = entry.get("webpage_url") or entry.get("url")
     if entry_url and ("youtube.com/watch" in entry_url or "youtu.be/" in entry_url):

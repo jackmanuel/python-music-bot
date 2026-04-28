@@ -10,6 +10,7 @@ from youtube import (
     REMOTE_COMPONENTS,
     YDL_OPTIONS,
     is_direct_url,
+    is_livestream_info,
     prepare_yt_dlp_query,
     select_first_video_entry,
     video_url_from_entry,
@@ -68,6 +69,11 @@ class YoutubeQueryTests(unittest.TestCase):
 
         assert selected is not None
         self.assertEqual(video_url_from_entry(selected), "https://www.youtube.com/watch?v=0cZ8-RgtrP0")
+
+    def test_livestream_info_detects_active_livestreams(self):
+        self.assertTrue(is_livestream_info({"is_live": True}))
+        self.assertTrue(is_livestream_info({"live_status": "is_live"}))
+        self.assertFalse(is_livestream_info({"is_live": False, "live_status": "was_live"}))
 
 
 if __name__ == "__main__":

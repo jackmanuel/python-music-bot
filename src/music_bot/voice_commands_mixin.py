@@ -157,6 +157,10 @@ class VoiceCommandsMixin:
         if not song_info:
             await ctx.send(f"Could not find or process `{query}`. Please check the URL or search terms.")
             return
+
+        if isinstance(song_info, dict) and song_info.get('error') == 'livestream':
+            await ctx.send("Video is a livestream, cannot play.")
+            return
         
         if isinstance(song_info, dict) and song_info.get('error') == 'duration_exceeded':
             title = song_info.get('title', 'Unknown Title')
@@ -189,6 +193,10 @@ class VoiceCommandsMixin:
             
             if not song_info:
                 await ctx.send(f"Failed to download `{query}`. Please try again.")
+                return
+
+            if isinstance(song_info, dict) and song_info.get('error') == 'livestream':
+                await ctx.send("Video is a livestream, cannot play.")
                 return
 
         try:
