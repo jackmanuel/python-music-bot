@@ -277,7 +277,7 @@ class VoiceCommandsMixin:
                 logger.exception(f"Unexpected error during initial play in {guild_id}: {e}")
                 self.current_song.pop(guild_id, None)
 
-    @commands.command(name='search', aliases=['select'], help='Shows the top 5 YouTube results and lets you choose one with a reaction.')
+    @commands.command(name='search', help='Shows the top 5 YouTube results and lets you choose one with a reaction.')
     async def search(self, ctx: commands.Context, *, query: str):
         """Searches YouTube and lets the user choose which result to play."""
         logger.info(f"'search' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id}) with query: {query}")

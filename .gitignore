@@ -7,8 +7,10 @@ venv/
 *.pyc
 __pycache__/
 
-# Secrets file
+# Secrets files
 .env
+.env.*
+!.env.example
 
 # Logs, downloaded files, etc.
 logs/

@@ -1,97 +1,80 @@
-
----
-
 # Discord Music Bot
 
-A straightforward Discord music bot built with `discord.py`. It plays audio from YouTube and SoundCloud, manages a queue, and tracks user song request statistics.
+A personal Discord music bot built with `discord.py`, `yt-dlp`, FFmpeg, and SQLite. It primarily plays music from YouTube search results or direct YouTube links, with SoundCloud URLs also supported through `yt-dlp`.
 
-## Features
+I built this for my own Discord server, and I am open sourcing it mainly as a professional portfolio example rather than as a polished public product. It is shared as-is, and I do not expect to maintain it like a general-purpose bot for other communities.
 
-*   Play music from YouTube and SoundCloud via search or direct URL.
-*   Full queue management: add, view (`!q`), skip, remove, and clear.
-*   Show what's currently playing (`!np`).
-*   User stats: see how many songs you (`!stats`) or others have requested.
-*   Server leaderboard (`!lb`) for top requesters.
+## What It Does
+
+*   Plays YouTube audio from search terms, selected search results, or direct URLs.
+*   Supports SoundCloud URLs through the same `yt-dlp` backend.
+*   Caches downloaded songs locally by default so repeated plays can start faster and avoid duplicate downloads.
+*   Tracks every song request in a local SQLite database, including the requester, server, resolved title, URL, duration, and play status.
+*   Uses that play history for stats commands, leaderboards, an animated leaderboard race, and cumulative play graphs.
+*   Provides a small local web interface for live logs, restart, and shutdown.
 *   Automatically disconnects from empty or inactive voice channels.
-*   Song duration limit to prevent excessively long downloads (default: 30 minutes).
+*   Rejects very long songs by default to keep downloads and cache size reasonable.
 
-## Setup for Windows
+## Stats And Play History
 
-Follow these steps to get the bot running on a Windows machine.
+Every song request is saved to an SQLite database. This history makes it possible to see who requests the most songs, how activity changes over time, and how the server leaderboard evolves.
 
-### 1. Prerequisites
+The `!cg` command generates a cumulative song-play graph from the database:
 
-*   **Python:** Install [Python 3.8 or newer](https://www.python.org/downloads/windows/). **Important:** During installation, make sure to check the box that says **"Add Python to PATH"**.
+![Cumulative song plays graph](docs/assets/cumulative_plays.png)
 
-*   **FFmpeg:** This is required for audio playback.
-    1.  Download a `release-full` build of FFmpeg from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/).
-    2.  Extract the downloaded `.zip` file into a permanent location, for example, `C:\ffmpeg`.
-    3.  You now have two options:
-        *   **(Recommended) Add to System PATH:** Add the `bin` folder from your FFmpeg directory (e.g., `C:\ffmpeg\bin`) to your Windows `Path` environment variable. This allows the bot to find it automatically.
-        *   **(Alternative) Set in `.env` file:** If you don't want to modify your system PATH, you can specify the direct path to `ffmpeg.exe` in the configuration file later.
+The same database format is also designed to work with my related Last.fm automation project, [last-fm-auto](https://github.com/jackmanuel/last-fm-auto), which I intend to open source as well. That project uses the bot's play history as a source for automatic Last.fm scrobbling.
 
-### 2. Project Installation
+## Commands
 
-1.  **Download the Code:** Download or clone this repository to your computer.
+The most commonly used commands are:
 
-2.  **Install Dependencies:** Open a Command Prompt or PowerShell in the project's folder (where `requirements.txt` is located) and run:
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-### 3. Configuration
-
-1.  **Create `.env` file:** In the same folder, create a new file named `.env`.
-
-2.  **Add Bot Token:** Open the `.env` file and add your Discord bot token. You can get this from the [Discord Developer Portal](https://discord.com/developers/applications).
-    ```dotenv
-    DISCORD_BOT_TOKEN=YOUR_BOT_TOKEN_HERE
-    ```
-
-3.  **(Optional) Configure FFmpeg Path:** If you did not add FFmpeg to your system PATH, you must add the following line to your `.env` file. **Remember to use forward slashes (`/`) for the path.**
-```dotenv
-# Example path, change it to match your own
-FFMPEG_EXECUTABLE_PATH=C:/ffmpeg/bin/ffmpeg.exe
-```
-
-4.  **(Optional) Configure Maximum Song Duration:** By default, the bot will reject songs longer than 30 minutes to save performance and disk space. You can customize this limit by adding the following line to your `.env` file (value in seconds):
-```dotenv
-# Example: Set maximum duration to 45 minutes (2700 seconds)
-MAX_SONG_DURATION_SECONDS=2700
-```
-
-### 4. Running the Bot (Windows)
-
-This project includes simple batch scripts to manage the bot:
-
-*   **`start_bot.bat`**: Double-click this file to run the bot in a new terminal window. It will automatically activate the virtual environment and start the Python script.
-*   **`stop_bot.bat`**: Run this script to gracefully shut down the bot. It sends a shutdown command to the bot's web server.
-
-Simply double-click `start_bot.bat` to get started. A console window will appear showing the bot's live logs.
-
-If you prefer to run it manually, open a Command Prompt, activate the virtual environment (`.venv\Scripts\activate`), and then run `python src\music_bot\music_bot.pyw`.
-
-### 5. Web Interface
-
-The bot includes a simple web interface accessible from your browser.
-
-*   **Log Viewer:** Open `http://localhost:8000` in your web browser to see the bot's live log output. This is useful for monitoring activity or diagnosing issues without needing to watch the console.
-*   **Remote Shutdown:** To stop the bot, you can click the **"Shutdown Bot"** button at the top of the Log Viewer page (`http://localhost:8000`). Alternatively, you can run the `stop_bot.bat` script, which sends a `POST` request to `http://localhost:8000/shutdown`. Do not just visit the `/shutdown` URL in your browser manually, as `GET` requests are intentionally ignored to prevent accidental shutdowns from browser prefetching!
-
-## Basic Commands
-
-*   `!join`: Bot joins your voice channel.
-*   `!play <song name or URL>`: Searches YouTube or plays from YouTube/SoundCloud URLs.
-*   `!search <song name>`: Shows the top 5 YouTube results so you can choose one with a reaction.
+*   `!play <song name or URL>`: Searches YouTube or plays a YouTube/SoundCloud URL.
+*   `!search <song name>`: Shows selectable YouTube results.
+*   `!queue` or `!q`: Shows the current queue.
 *   `!skip`: Skips the current song.
-*   `!queue` or `!q`: Shows the current song queue.
-*   `!np`: Shows the currently playing song and its progress.
-*   `!stats [@user]`: Shows request stats for you or another user.
-*   `!leaderboard` or `!lb`: Shows the top 5 song requesters.
-*   `!leave`: Disconnects the bot from the voice channel.
+*   `!stats [@user]`: Shows request stats.
+*   `!leaderboard` or `!lb`: Shows the top requesters.
+*   `!cg`: Generates a cumulative play graph.
+*   `!leaderboardrace`: Generates an animated leaderboard race video.
+
+See [docs/COMMANDS.md](docs/COMMANDS.md) for the full command reference.
+
+## Setup For Windows
+
+### Prerequisites
+
+*   Python 3.10 or newer.
+*   FFmpeg available on your system `PATH`.
+*   A Discord bot token from the [Discord Developer Portal](https://discord.com/developers/applications).
+
+### Installation
+
+Clone or download the repository, then run:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+Copy `.env.example` to `.env`, then set your Discord bot token:
+
+```dotenv
+DISCORD_BOT_TOKEN=YOUR_BOT_TOKEN_HERE
+```
+
+Optional settings, including a custom FFmpeg path and maximum song duration, are documented in `.env.example`.
+
+### Running The Bot
+
+Double-click `start_bot.bat` to start the bot. The startup window closes after launch; ongoing monitoring and management happen through the local web interface.
+
+Open `http://localhost:8000` to view live logs, restart the bot, or shut it down. You can also run `stop_bot.bat` to send the same graceful shutdown request.
 
 ## Project Structure
 
 *   `src/music_bot/`: Bot source code and supporting Python modules.
-*   `web/templates/`: HTML templates used by the local log viewer.
+*   `web/templates/`: HTML template for the local log viewer.
+*   `tests/`: Unit tests for the YouTube query helpers.
 *   `database/`, `logs/`, and `song_cache/`: Runtime data generated by the bot.
