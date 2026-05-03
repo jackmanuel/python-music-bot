@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import shutil
 from pathlib import Path
 from urllib.parse import urlparse
@@ -13,6 +14,8 @@ logger = logging.getLogger(__name__)
 SUPPORTED_URL_SCHEMES = {"http", "https"}
 SEARCH_PREFIXES = ("ytsearch", "ytsearchdate", "scsearch")
 SEARCH_RESULT_COUNT = 5
+AGE_RESTRICTED_PLAYBACK_MESSAGE = "Cannot play video, it is age restricted."
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 def first_existing_path(*candidates) -> str | None:
@@ -114,6 +117,24 @@ def is_livestream_info(info: dict) -> bool:
     return info.get("is_live") is True or live_status == "is_live"
 
 
+def is_age_restricted_yt_dlp_error(error) -> bool:
+    """Return True when yt-dlp failed in the shape YouTube age gates produce."""
+    error_text = ANSI_ESCAPE_RE.sub("", str(error)).lower()
+    return any(
+        marker in error_text
+        for marker in (
+            "age-restricted",
+            "age restricted",
+            "confirm your age",
+            "inappropriate for some users",
+        )
+    )
+
+
+def age_restricted_error_result() -> dict:
+    return {'error': 'age_restricted'}
+
+
 def video_url_from_entry(entry: dict) -> str | None:
     entry_url = entry.get("webpage_url") or entry.get("url")
     if entry_url and ("youtube.com/watch" in entry_url or "youtu.be/" in entry_url):
@@ -152,6 +173,11 @@ def run_yt_dlp_extractor(query, download=False):
         with yt_dlp.YoutubeDL(ydl_options) as ydl:
             data = ydl.extract_info(prepared_query, download=download)
         return data
+    except yt_dlp.utils.DownloadError as e:
+        logger.error("yt-dlp DownloadError within run_yt_dlp_extractor for query %r: %s", query, e)
+        if is_age_restricted_yt_dlp_error(e):
+            return age_restricted_error_result()
+        raise RuntimeError(str(e)) from None
     except Exception as e:
         logger.error("Error within run_yt_dlp_extractor for query %r: %s", query, e)
         raise
@@ -198,6 +224,11 @@ def run_yt_dlp_search(query):
 
             data = ydl.extract_info(prepared_query, download=False)
         return data
+    except yt_dlp.utils.DownloadError as e:
+        logger.error("yt-dlp DownloadError within run_yt_dlp_search for query %r: %s", query, e)
+        if is_age_restricted_yt_dlp_error(e):
+            return age_restricted_error_result()
+        raise RuntimeError(str(e)) from None
     except Exception as e:
         logger.error("Error within run_yt_dlp_search for query %r: %s", query, e)
         raise
@@ -230,6 +261,11 @@ def run_yt_dlp_search_results(query, result_count: int = SEARCH_RESULT_COUNT):
             data = ydl.extract_info(prepared_query, download=False)
 
         return select_video_entries(data.get('entries') or [], limit=result_count)
+    except yt_dlp.utils.DownloadError as e:
+        logger.error("yt-dlp DownloadError within run_yt_dlp_search_results for query %r: %s", query, e)
+        if is_age_restricted_yt_dlp_error(e):
+            return []
+        raise RuntimeError(str(e)) from None
     except Exception as e:
         logger.error("Error within run_yt_dlp_search_results for query %r: %s", query, e)
         raise

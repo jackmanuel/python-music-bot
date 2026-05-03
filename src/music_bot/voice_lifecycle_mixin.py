@@ -6,6 +6,7 @@ import discord
 from discord.ext import commands, tasks
 
 from config import INACTIVITY_TIMEOUT_MINUTES
+from youtube import AGE_RESTRICTED_PLAYBACK_MESSAGE, is_age_restricted_yt_dlp_error
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,11 @@ class VoiceLifecycleMixin:
         elif isinstance(error, commands.CheckFailure):
             await ctx.send("You don't have the necessary permissions to use this command.")
         elif isinstance(error, commands.CommandInvokeError):
-             await ctx.send(f"An error occurred while executing the command. Please check the logs or contact the admin. Error: {error.original}")
-             logger.exception(f"CommandInvokeError in {ctx.command.qualified_name}: {error.original}")
+            if is_age_restricted_yt_dlp_error(error.original):
+                await ctx.send(AGE_RESTRICTED_PLAYBACK_MESSAGE)
+                logger.exception(f"CommandInvokeError in {ctx.command.qualified_name}: {error.original}")
+                return
+            await ctx.send(f"An error occurred while executing the command. Please check the logs or contact the admin. Error: {error.original}")
+            logger.exception(f"CommandInvokeError in {ctx.command.qualified_name}: {error.original}")
         else:
             await ctx.send(f"An unexpected error occurred: {error}")

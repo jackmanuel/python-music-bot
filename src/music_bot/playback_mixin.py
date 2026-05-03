@@ -8,7 +8,7 @@ import discord
 import yt_dlp
 
 from config import FFMPEG_EXECUTABLE, MAX_SONG_DURATION_SECONDS, SONG_CACHE_DIR
-from youtube import FFMPEG_OPTIONS, is_livestream_info, run_yt_dlp_extractor, run_yt_dlp_search, run_yt_dlp_search_results
+from youtube import FFMPEG_OPTIONS, is_age_restricted_yt_dlp_error, is_livestream_info, run_yt_dlp_extractor, run_yt_dlp_search, run_yt_dlp_search_results
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,10 @@ class PlaybackMixin:
             if not data:
                 logger.warning(f"Search returned no data for '{query}'.")
                 return None
+
+            if isinstance(data, dict) and data.get('error') == 'age_restricted':
+                logger.warning(f"Cannot play age-restricted video for query '{query}'.")
+                return data
 
             if 'entries' in data:
                 logger.info(f"Found multiple entries for '{query}', using first result.")
@@ -131,6 +135,10 @@ class PlaybackMixin:
                     True
                 )
 
+                if isinstance(downloaded_data, dict) and downloaded_data.get('error') == 'age_restricted':
+                    logger.warning(f"Cannot download age-restricted video for query '{query}'.")
+                    return downloaded_data
+
                 if getattr(self, 'is_shutting_down', False):
                     logger.info("Discarding downloaded info because shutdown is in progress.")
                     return None
@@ -201,11 +209,13 @@ class PlaybackMixin:
 
         except Exception as e:
             if "Can't pickle" in str(e):
-                 logger.critical(f"Pickling error encountered despite fix attempt for '{query}': {e}", exc_info=True)
+                logger.critical(f"Pickling error encountered despite fix attempt for '{query}': {e}", exc_info=True)
             elif isinstance(e, yt_dlp.utils.DownloadError):
-                 logger.error(f"yt-dlp DownloadError extracting info for '{query}': {e}")
+                logger.error(f"yt-dlp DownloadError extracting info for '{query}': {e}")
+                if is_age_restricted_yt_dlp_error(e):
+                    return {'error': 'age_restricted'}
             elif isinstance(e, concurrent.futures.process.BrokenProcessPool):
-                 logger.error(f"Process Pool Broken during info extraction for '{query}'. It might be shutting down or crashed: {e}")
+                logger.error(f"Process Pool Broken during info extraction for '{query}'. It might be shutting down or crashed: {e}")
             else:
                 logger.exception(f"Unexpected error during info extraction process for '{query}': {e}")
             return None

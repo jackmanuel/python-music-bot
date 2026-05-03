@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src" / "music_bot"
@@ -9,13 +10,17 @@ sys.path.insert(0, str(SRC_DIR))
 from youtube import (
     REMOTE_COMPONENTS,
     YDL_OPTIONS,
+    age_restricted_error_result,
+    is_age_restricted_yt_dlp_error,
     is_direct_url,
     is_livestream_info,
     prepare_yt_dlp_query,
+    run_yt_dlp_search,
     select_first_video_entry,
     select_video_entries,
     video_url_from_entry,
 )
+import yt_dlp
 
 
 class YoutubeQueryTests(unittest.TestCase):
@@ -112,6 +117,26 @@ class YoutubeQueryTests(unittest.TestCase):
         self.assertTrue(is_livestream_info({"is_live": True}))
         self.assertTrue(is_livestream_info({"live_status": "is_live"}))
         self.assertFalse(is_livestream_info({"is_live": False, "live_status": "was_live"}))
+
+    def test_age_restricted_error_ignores_unavailable_format_messages(self):
+        error = (
+            "\x1b[0;31mERROR:\x1b[0m [youtube] vXg8IVbOY_E: Requested format is not available. "
+            "Use --list-formats for a list of available formats."
+        )
+
+        self.assertFalse(is_age_restricted_yt_dlp_error(error))
+
+    def test_age_restricted_error_detects_explicit_age_gate(self):
+        self.assertTrue(is_age_restricted_yt_dlp_error("Sign in to confirm your age"))
+        self.assertFalse(is_age_restricted_yt_dlp_error("[soundcloud] Requested format is not available."))
+
+    @patch("youtube.yt_dlp.YoutubeDL")
+    def test_run_yt_dlp_search_returns_picklable_age_restricted_result(self, mock_youtube_dl):
+        ydl = MagicMock()
+        ydl.extract_info.side_effect = yt_dlp.utils.DownloadError("Sign in to confirm your age")
+        mock_youtube_dl.return_value.__enter__.return_value = ydl
+
+        self.assertEqual(run_yt_dlp_search("https://www.youtube.com/watch?v=abc123"), age_restricted_error_result())
 
 
 if __name__ == "__main__":

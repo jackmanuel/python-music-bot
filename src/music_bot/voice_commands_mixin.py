@@ -5,7 +5,7 @@ import time
 import discord
 from discord.ext import commands
 
-from youtube import FFMPEG_OPTIONS, video_url_from_entry
+from youtube import AGE_RESTRICTED_PLAYBACK_MESSAGE, FFMPEG_OPTIONS, video_url_from_entry
 from config import FFMPEG_EXECUTABLE, MAX_SONG_DURATION_SECONDS
 
 logger = logging.getLogger(__name__)
@@ -171,6 +171,10 @@ class VoiceCommandsMixin:
         if isinstance(song_info, dict) and song_info.get('error') == 'livestream':
             await ctx.send("Video is a livestream, cannot play.")
             return
+        if isinstance(song_info, dict) and song_info.get('error') == 'age_restricted':
+            logger.info(f"Sent age-restricted playback message for query: {query_stripped}")
+            await ctx.send(AGE_RESTRICTED_PLAYBACK_MESSAGE)
+            return
         
         should_download = self._should_download_to_cache(song_info)
         if song_info.get('exceeds_cache_duration', False) and not song_info.get('is_cached', False):
@@ -197,6 +201,10 @@ class VoiceCommandsMixin:
 
             if isinstance(song_info, dict) and song_info.get('error') == 'livestream':
                 await ctx.send("Video is a livestream, cannot play.")
+                return
+            if isinstance(song_info, dict) and song_info.get('error') == 'age_restricted':
+                logger.info(f"Sent age-restricted playback message for query: {download_query}")
+                await ctx.send(AGE_RESTRICTED_PLAYBACK_MESSAGE)
                 return
 
         try:
