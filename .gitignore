@@ -17,6 +17,7 @@ logs/
 song_cache/
 database/
 *.log
+*.txt
 *.log.*
 *.opus
 *.webm

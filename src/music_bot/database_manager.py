@@ -50,27 +50,91 @@ class DatabaseManager:
         try:
             with conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS play_history (
-                        request_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        request_timestamp TEXT NOT NULL,
-                        play_start_timestamp TEXT,
-                        duration INTEGER,
-                        user_id INTEGER NOT NULL,
-                        user_name TEXT NOT NULL,
-                        guild_id INTEGER NOT NULL,
-                        query TEXT NOT NULL,
-                        resolved_title TEXT,
-                        resolved_url TEXT,
-                        channel_name TEXT,
-                        play_status TEXT NOT NULL DEFAULT 'queued',
-                        scrobble_status TEXT NOT NULL DEFAULT 'new'
-                    )
-                """)
-                cursor.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_play_history_user_id ON play_history (user_id);
-                """)
-                logger.info(f"Database table 'play_history' initialized successfully in {self.db_file}.")
+                
+                # Check if play_history table already exists
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='play_history'")
+                table_exists = cursor.fetchone() is not None
+                
+                needs_migration = False
+                if table_exists:
+                    cursor.execute("PRAGMA table_info(play_history)")
+                    columns = cursor.fetchall()
+                    for col in columns:
+                        col_name = col[1]
+                        col_type = col[2]
+                        if col_name in ('user_id', 'guild_id') and col_type.upper() == 'INTEGER':
+                            needs_migration = True
+                            break
+                
+                if needs_migration:
+                    logger.info("Migrating play_history schema: changing user_id and guild_id columns to TEXT...")
+                    # 1. Rename existing table
+                    cursor.execute("ALTER TABLE play_history RENAME TO _play_history_old")
+                    
+                    # 2. Create new table with updated TEXT schema
+                    cursor.execute("""
+                        CREATE TABLE play_history (
+                            request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            request_timestamp TEXT NOT NULL,
+                            play_start_timestamp TEXT,
+                            duration INTEGER,
+                            user_id TEXT NOT NULL,
+                            user_name TEXT NOT NULL,
+                            guild_id TEXT NOT NULL,
+                            query TEXT NOT NULL,
+                            resolved_title TEXT,
+                            resolved_url TEXT,
+                            channel_name TEXT,
+                            play_status TEXT NOT NULL DEFAULT 'queued',
+                            scrobble_status TEXT NOT NULL DEFAULT 'new'
+                        )
+                    """)
+                    
+                    # 3. Copy records, casting user_id and guild_id to TEXT
+                    cursor.execute("""
+                        INSERT INTO play_history (
+                            request_id, request_timestamp, play_start_timestamp, duration,
+                            user_id, user_name, guild_id, query, resolved_title,
+                            resolved_url, channel_name, play_status, scrobble_status
+                        )
+                        SELECT 
+                            request_id, request_timestamp, play_start_timestamp, duration,
+                            CAST(user_id AS TEXT), user_name, CAST(guild_id AS TEXT), query, resolved_title,
+                            resolved_url, channel_name, play_status, scrobble_status
+                        FROM _play_history_old
+                    """)
+                    
+                    # 4. Re-create index
+                    cursor.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_play_history_user_id ON play_history (user_id);
+                    """)
+                    
+                    # 5. Drop the old table
+                    cursor.execute("DROP TABLE _play_history_old")
+                    logger.info("Database schema migration completed successfully.")
+                else:
+                    # Create the table using the new schema if it doesn't exist
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS play_history (
+                            request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            request_timestamp TEXT NOT NULL,
+                            play_start_timestamp TEXT,
+                            duration INTEGER,
+                            user_id TEXT NOT NULL,
+                            user_name TEXT NOT NULL,
+                            guild_id TEXT NOT NULL,
+                            query TEXT NOT NULL,
+                            resolved_title TEXT,
+                            resolved_url TEXT,
+                            channel_name TEXT,
+                            play_status TEXT NOT NULL DEFAULT 'queued',
+                            scrobble_status TEXT NOT NULL DEFAULT 'new'
+                        )
+                    """)
+                    cursor.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_play_history_user_id ON play_history (user_id);
+                    """)
+                    logger.info(f"Database table 'play_history' initialized successfully in {self.db_file}.")
         except sqlite3.Error as e:
             logger.error(f"Database initialization error in {self.db_file}: {e}", exc_info=True)
         finally:
@@ -282,7 +346,7 @@ class DatabaseManager:
 
                 for row in results:
                     user_data: Dict[str, Any] = {
-                        'user_id': row['user_id'],
+                        'user_id': int(row['user_id']),
                         'user_name': row['user_name'],
                         'request_count': row['request_count']
                     }
@@ -417,7 +481,7 @@ class DatabaseManager:
                 for row in results:
                     play_data.append({
                         'request_timestamp': row['request_timestamp'],
-                        'user_id': row['user_id'],
+                        'user_id': int(row['user_id']),
                         'user_name': row['user_name']
                     })
         except sqlite3.Error as e:
