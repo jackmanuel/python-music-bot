@@ -16,8 +16,8 @@ __pycache__/
 logs/
 song_cache/
 database/
+commit.txt
 *.log
-*.txt
 *.log.*
 *.opus
 *.webm
