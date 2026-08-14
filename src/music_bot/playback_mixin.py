@@ -63,9 +63,19 @@ class PlaybackMixin:
                 logger.warning(f"Cannot play age-restricted video for query '{query}'.")
                 return data
 
-            if 'entries' in data:
-                logger.info(f"Found multiple entries for '{query}', using first result.")
-                data = data['entries'][0]
+            if isinstance(data, dict) and 'entries' in data:
+                entries = data.get('entries') or []
+                if not entries:
+                    logger.warning(
+                        f"yt-dlp returned no playable entries for '{query}'. "
+                        "The search may have no results or its results may be unavailable."
+                    )
+                    return None
+
+                logger.info(
+                    f"yt-dlp returned {len(entries)} entries for '{query}', using the first result."
+                )
+                data = entries[0]
 
             if is_livestream_info(data):
                 logger.warning(f"Refusing livestream '{data.get('title', 'Unknown')}' for query '{query}'.")
