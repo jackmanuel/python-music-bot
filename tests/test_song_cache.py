@@ -69,6 +69,30 @@ class SongCacheTests(unittest.TestCase):
         self.assertEqual(cache.get("abc123"), str(cached_file))
         self.assertFalse(cache.can_accept_download())
 
+    def test_removes_one_indexed_file(self):
+        cache_dir = self.temp_dir / "song_cache"
+        cache_dir.mkdir()
+        cache = SongCache(cache_dir)
+        cached_file = cache_dir / "youtube-abc123.opus"
+        cached_file.write_bytes(b"song")
+        cache.add("abc123", str(cached_file))
+
+        self.assertTrue(cache.remove("abc123", expected_file_path=str(cached_file)))
+        self.assertFalse(cached_file.exists())
+        self.assertIsNone(cache.get("abc123"))
+
+    def test_refuses_to_remove_when_the_indexed_path_changed(self):
+        cache_dir = self.temp_dir / "song_cache"
+        cache_dir.mkdir()
+        cache = SongCache(cache_dir)
+        cached_file = cache_dir / "youtube-abc123.opus"
+        cached_file.write_bytes(b"song")
+        cache.add("abc123", str(cached_file))
+
+        self.assertFalse(cache.remove("abc123", expected_file_path=str(cache_dir / "other.opus")))
+        self.assertTrue(cached_file.exists())
+        self.assertEqual(cache.get("abc123"), str(cached_file))
+
 
 if __name__ == "__main__":
     unittest.main()

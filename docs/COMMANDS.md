@@ -14,7 +14,7 @@ The bot uses `!` as its command prefix.
 
 *   `!queue` or `!q`: Shows the currently playing song and the next queued songs.
 *   `!nowplaying` or `!np`: Shows the current song and playback progress.
-*   `!remove <position>`: Removes a queued song by its queue number.
+*   `!remove <position>`: Removes a queued song by its queue number. If that request created a new cache download, the file is removed when no longer in use.
 *   `!clear`: Clears the waiting queue and marks those requests as skipped without interrupting the current song.
 
 ## Stats
@@ -30,3 +30,5 @@ The bot uses `!` as its command prefix.
 
 *   `!cache`: Shows the number of cached songs, approximate cache size, and active cache mode.
 *   `!clearcache`: Clears cached `.opus` files. Requires administrator permissions and a typed confirmation.
+
+New cache downloads are also removed automatically when their song is skipped within the first 30 seconds of playback. Previously cached songs are not affected.

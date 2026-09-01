@@ -40,6 +40,7 @@ class MusicCog(
         self.current_song = {}
         self.voice_clients = {}
         self.last_activity = {}
+        self.pending_cache_evictions = {}
         self.is_shutting_down = False
         self.cache_downloads_enabled = CACHE_DOWNLOADS_ENABLED
         self.song_cache = SongCache(

@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from collections import deque
 from pathlib import Path
+from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src" / "music_bot"
@@ -135,6 +136,124 @@ class QueueClearTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(waiting), 0)
         self.assertIs(mixin.current_song[10], current)
         self.assertEqual(ctx.messages, ["Song queue cleared!"])
+
+
+class CacheCleanupCommandTests(unittest.IsolatedAsyncioTestCase):
+    class Context:
+        def __init__(self):
+            self.author = "Test User"
+            self.guild = type("Guild", (), {"id": 10, "name": "Test Server"})()
+            self.messages = []
+
+        async def send(self, message):
+            self.messages.append(message)
+
+    class RecordingDatabase:
+        def __init__(self):
+            self.status_updates = []
+
+        def update_play_status(self, request_id, status):
+            self.status_updates.append((request_id, status))
+
+    async def test_remove_requests_eviction_for_a_new_download(self):
+        mixin = QueueCommandsMixin()
+        removed_song = {
+            "request_id": 101,
+            "title": "Wrong Song",
+            "created_cache_entry": True,
+        }
+        waiting = deque([removed_song])
+        eviction_requests = []
+        mixin.last_activity = {}
+        mixin.db_manager = self.RecordingDatabase()
+        mixin.get_queue = lambda guild_id: waiting
+        mixin._request_cache_eviction = lambda song: eviction_requests.append(song) or "deleted"
+        mixin._process_pending_cache_evictions = lambda: None
+        ctx = self.Context()
+
+        await QueueCommandsMixin.remove.callback(mixin, ctx, 1)
+
+        self.assertEqual(eviction_requests, [removed_song])
+        self.assertEqual(len(waiting), 0)
+        self.assertIn("also removed from cache", ctx.messages[0])
+
+    async def test_skip_within_thirty_seconds_requests_eviction(self):
+        class VoiceClient:
+            def __init__(self):
+                self.stopped = False
+
+            def is_connected(self):
+                return True
+
+            def is_playing(self):
+                return True
+
+            def is_paused(self):
+                return False
+
+            def stop(self):
+                self.stopped = True
+
+        mixin = VoiceCommandsMixin()
+        current = {
+            "request_id": 101,
+            "title": "Wrong Song",
+            "duration": 180,
+            "start_time": 100,
+            "created_cache_entry": True,
+        }
+        voice_client = VoiceClient()
+        eviction_requests = []
+        mixin.last_activity = {}
+        mixin.voice_clients = {10: voice_client}
+        mixin.current_song = {10: current}
+        mixin.db_manager = self.RecordingDatabase()
+        mixin._request_cache_eviction = lambda song: eviction_requests.append(song) or "deferred"
+        ctx = self.Context()
+
+        with patch("voice_commands_mixin.time.time", return_value=125):
+            await VoiceCommandsMixin.skip.callback(mixin, ctx)
+
+        self.assertEqual(eviction_requests, [current])
+        self.assertTrue(voice_client.stopped)
+        self.assertTrue(current["was_skipped"])
+        self.assertIn("skipped early", ctx.messages[0])
+
+    async def test_skip_after_thirty_seconds_keeps_the_cache_entry(self):
+        class VoiceClient:
+            def is_connected(self):
+                return True
+
+            def is_playing(self):
+                return True
+
+            def is_paused(self):
+                return False
+
+            def stop(self):
+                pass
+
+        mixin = VoiceCommandsMixin()
+        current = {
+            "request_id": 101,
+            "title": "Correct Song",
+            "duration": 180,
+            "start_time": 100,
+            "created_cache_entry": True,
+        }
+        eviction_requests = []
+        mixin.last_activity = {}
+        mixin.voice_clients = {10: VoiceClient()}
+        mixin.current_song = {10: current}
+        mixin.db_manager = self.RecordingDatabase()
+        mixin._request_cache_eviction = lambda song: eviction_requests.append(song) or "deferred"
+        ctx = self.Context()
+
+        with patch("voice_commands_mixin.time.time", return_value=131):
+            await VoiceCommandsMixin.skip.callback(mixin, ctx)
+
+        self.assertEqual(eviction_requests, [])
+        self.assertNotIn("skipped early", ctx.messages[0])
 
 
 if __name__ == "__main__":

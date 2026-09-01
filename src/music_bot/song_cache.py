@@ -107,6 +107,36 @@ class SongCache:
         self._check_capacity()
         return True
 
+    def remove(self, youtube_id, expected_file_path=None):
+        """Remove one indexed cache file if it still matches the expected path."""
+        file_path = self._songs.get(youtube_id)
+        if not file_path:
+            return False
+
+        if expected_file_path is not None:
+            indexed_path = os.path.normcase(os.path.abspath(file_path))
+            expected_path = os.path.normcase(os.path.abspath(expected_file_path))
+            if indexed_path != expected_path:
+                logger.warning(
+                    "Refusing to remove cache entry %s because its path changed from %s to %s.",
+                    youtube_id,
+                    expected_file_path,
+                    file_path,
+                )
+                return False
+
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except OSError as e:
+            logger.warning("Could not remove cached song %s at %s: %s", youtube_id, file_path, e)
+            return False
+
+        self._songs.pop(youtube_id, None)
+        logger.info("Removed song %s from cache", youtube_id)
+        self._check_capacity()
+        return True
+
     def refresh_capacity(self):
         """Refresh capacity logs after files have been removed externally."""
         self._check_capacity()

@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 SEARCH_REACTION_CHOICES = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
 CANCEL_SEARCH_REACTION = "❌"
+EARLY_SKIP_CACHE_EVICTION_SECONDS = 30
 
 
 class VoiceCommandsMixin:
@@ -466,7 +467,17 @@ class VoiceCommandsMixin:
 
 
         logger.info(f"Skipping song in guild {guild_id} by command: {current['title']}")
-        await ctx.send(f"Skipping: {current['title']}")
+        skipped_early = elapsed_time <= EARLY_SKIP_CACHE_EVICTION_SECONDS
+        eviction_status = None
+        if skipped_early:
+            request_eviction = getattr(self, '_request_cache_eviction', None)
+            if request_eviction:
+                eviction_status = request_eviction(current)
+
+        message = f"Skipping: {current['title']}"
+        if eviction_status in {'deleted', 'deferred'}:
+            message += " — skipped early, so its new cache download will be removed from cache."
+        await ctx.send(message)
         # The 'after' callback (_play_next) will handle the rest.
         self.current_song[guild_id]['was_skipped'] = True
         vc.stop()

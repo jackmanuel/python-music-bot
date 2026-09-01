@@ -14,6 +14,77 @@ logger = logging.getLogger(__name__)
 
 
 class PlaybackMixin:
+    @staticmethod
+    def _song_references_cache_entry(song_info, youtube_id, file_path):
+        if not song_info or not song_info.get('is_cached', False):
+            return False
+        if youtube_id and song_info.get('youtube_id') == youtube_id:
+            return True
+        if not file_path:
+            return False
+        return os.path.normcase(os.path.abspath(song_info.get('url', ''))) == os.path.normcase(
+            os.path.abspath(file_path)
+        )
+
+    def _cache_entry_is_referenced(self, youtube_id, file_path):
+        for song_info in getattr(self, 'current_song', {}).values():
+            if self._song_references_cache_entry(song_info, youtube_id, file_path):
+                return True
+
+        for queue in getattr(self, 'queues', {}).values():
+            for song_info in queue:
+                if self._song_references_cache_entry(song_info, youtube_id, file_path):
+                    return True
+        return False
+
+    def _process_pending_cache_evictions(self):
+        """Delete rejected new downloads once no playback entry references them."""
+        pending = getattr(self, 'pending_cache_evictions', {})
+        results = {}
+        for youtube_id, eviction in list(pending.items()):
+            file_path = eviction['file_path']
+            if self._cache_entry_is_referenced(youtube_id, file_path):
+                results[youtube_id] = 'deferred'
+                continue
+
+            if not self.song_cache.get(youtube_id):
+                pending.pop(youtube_id, None)
+                results[youtube_id] = 'deleted'
+                continue
+
+            if self.song_cache.remove(youtube_id, expected_file_path=file_path):
+                pending.pop(youtube_id, None)
+                results[youtube_id] = 'deleted'
+                logger.info(
+                    "Deleted rejected new cache download for '%s' (%s).",
+                    eviction['title'],
+                    youtube_id,
+                )
+            else:
+                results[youtube_id] = 'failed'
+        return results
+
+    def _request_cache_eviction(self, song_info):
+        """Request eviction when this playback request created its cache entry."""
+        if not song_info.get('created_cache_entry', False):
+            return None
+
+        youtube_id = song_info.get('youtube_id')
+        file_path = song_info.get('url')
+        if not youtube_id or not file_path:
+            logger.warning("Cannot evict a new cache entry without its YouTube ID and file path.")
+            return 'failed'
+
+        pending = getattr(self, 'pending_cache_evictions', None)
+        if pending is None:
+            pending = {}
+            self.pending_cache_evictions = pending
+        pending[youtube_id] = {
+            'file_path': file_path,
+            'title': song_info.get('title', 'Unknown Title'),
+        }
+        return self._process_pending_cache_evictions().get(youtube_id, 'deferred')
+
     async def _search_results(self, query, result_count=5):
         """Searches yt-dlp for flat video results without blocking the event loop."""
         if getattr(self, 'is_shutting_down', False):
@@ -108,6 +179,7 @@ class PlaybackMixin:
                     'start_time': None,
                     'is_cached': True,
                     'was_previously_cached': True,
+                    'created_cache_entry': False,
                     'exceeds_cache_duration': exceeds_cache_duration,
                     'estimated_size_bytes': estimated_size_bytes,
                 }
@@ -131,6 +203,7 @@ class PlaybackMixin:
                         'start_time': None,
                         'is_cached': False,
                         'was_previously_cached': False,
+                        'created_cache_entry': False,
                         'exceeds_cache_duration': True,
                         'estimated_size_bytes': estimated_size_bytes,
                     }
@@ -151,6 +224,7 @@ class PlaybackMixin:
                         'start_time': None,
                         'is_cached': False,
                         'was_previously_cached': False,
+                        'created_cache_entry': False,
                         'exceeds_cache_duration': False,
                         'estimated_size_bytes': estimated_size_bytes,
                     }
@@ -224,6 +298,7 @@ class PlaybackMixin:
                             'start_time': None,
                             'is_cached': False,
                             'was_previously_cached': False,
+                            'created_cache_entry': False,
                             'exceeds_cache_duration': False,
                             'estimated_size_bytes': estimated_size_bytes,
                         }
@@ -240,6 +315,7 @@ class PlaybackMixin:
                         'start_time': None,
                         'is_cached': True,
                         'was_previously_cached': False,
+                        'created_cache_entry': True,
                         'exceeds_cache_duration': False,
                         'estimated_size_bytes': estimated_size_bytes,
                     }
@@ -259,6 +335,7 @@ class PlaybackMixin:
                     'start_time': None,
                     'is_cached': False,
                     'was_previously_cached': False,
+                    'created_cache_entry': False,
                     'exceeds_cache_duration': exceeds_cache_duration,
                     'estimated_size_bytes': estimated_size_bytes,
                 }
@@ -302,6 +379,7 @@ class PlaybackMixin:
         if not queue:
             logger.info(f"Queue empty for guild {guild_id}.")
             self.current_song.pop(guild_id, None)
+            self._process_pending_cache_evictions()
             self.last_activity[guild_id] = time.time()
             return
 
@@ -326,12 +404,14 @@ class PlaybackMixin:
         if not queue:
             logger.info(f"Queue empty for guild {guild_id} (async check).")
             self.current_song.pop(guild_id, None)
+            self._process_pending_cache_evictions()
             self.last_activity[guild_id] = time.time()
             return
 
         next_song_info = queue.popleft()
         next_song_info['start_time'] = time.time()
         self.current_song[guild_id] = next_song_info
+        self._process_pending_cache_evictions()
         if 'request_id' in next_song_info:
             self.db_manager.update_play_start_timestamp(next_song_info['request_id'])
             self.db_manager.update_play_status(next_song_info['request_id'], 'playing')
@@ -341,6 +421,7 @@ class PlaybackMixin:
         if guild_id not in self.voice_clients or not self.voice_clients[guild_id].is_connected():
             logger.warning(f"Voice client not available or disconnected in guild {guild_id} when trying to play next.")
             self.current_song.pop(guild_id, None)
+            self._process_pending_cache_evictions()
             return
 
         vc = self.voice_clients[guild_id]
@@ -360,8 +441,10 @@ class PlaybackMixin:
         except discord.ClientException as e:
              logger.error(f"Discord ClientException while trying to play next in {guild_id}: {e}")
              self.current_song.pop(guild_id, None)
+             self._process_pending_cache_evictions()
              await self._play_next_async(guild_id)
         except Exception as e:
             logger.exception(f"Unexpected error during playback setup in {guild_id}: {e}")
             self.current_song.pop(guild_id, None)
+            self._process_pending_cache_evictions()
             await self._play_next_async(guild_id)

@@ -45,6 +45,9 @@ class VoiceLifecycleMixin:
                          self.queues.pop(guild_id, None)
                          self.current_song.pop(guild_id, None)
                          self.last_activity.pop(guild_id, None)
+                         process_evictions = getattr(self, '_process_pending_cache_evictions', None)
+                         if process_evictions:
+                             process_evictions()
                      else:
                           logger.info(f"Disconnect cancelled for guild {guild_id}, user rejoined.")
                 else:
@@ -69,8 +72,15 @@ class VoiceLifecycleMixin:
                     self.queues.pop(guild_id, None)
                     self.current_song.pop(guild_id, None)
                     self.last_activity.pop(guild_id, None)
+                    process_evictions = getattr(self, '_process_pending_cache_evictions', None)
+                    if process_evictions:
+                        process_evictions()
             elif vc and vc.is_connected() and (vc.is_playing() or vc.is_paused()):
                 self.last_activity[guild_id] = now
+
+        process_evictions = getattr(self, '_process_pending_cache_evictions', None)
+        if process_evictions:
+            process_evictions()
 
 
     @inactivity_check.before_loop

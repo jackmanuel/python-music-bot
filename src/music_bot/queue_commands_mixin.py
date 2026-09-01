@@ -134,8 +134,21 @@ class QueueCommandsMixin:
                     self.db_manager.update_play_status(removed_song_info['request_id'], 'skipped')
                     logger.info(f"Updated status to 'skipped' for removed song with request_id: {removed_song_info['request_id']}")
 
+                eviction_status = None
+                request_eviction = getattr(self, '_request_cache_eviction', None)
+                if request_eviction:
+                    eviction_status = request_eviction(removed_song_info)
+                process_evictions = getattr(self, '_process_pending_cache_evictions', None)
+                if process_evictions:
+                    process_evictions()
+
                 logger.info(f"Removed song at position {position} in guild {guild_id}: {removed_song_info['title']}")
-                await ctx.send(f"Removed song #{position}: **{removed_song_info['title']}**")
+                message = f"Removed song #{position}: **{removed_song_info['title']}**"
+                if eviction_status == 'deleted':
+                    message += " It was a new download, so it was also removed from cache."
+                elif eviction_status == 'deferred':
+                    message += " Its new cache download will be removed when no longer in use."
+                await ctx.send(message)
 
             except IndexError:
                  await ctx.send("An error occurred trying to remove that song. The queue might have changed.")
@@ -175,5 +188,8 @@ class QueueCommandsMixin:
                 self.db_manager.update_play_status(request_id, 'skipped')
 
         queue.clear()
+        process_evictions = getattr(self, '_process_pending_cache_evictions', None)
+        if process_evictions:
+            process_evictions()
         await ctx.send("Song queue cleared!")
         logger.info(f"Cleared {cleared_count} queued song(s) in guild {guild_id} by command.")
