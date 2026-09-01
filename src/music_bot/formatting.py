@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -17,3 +18,11 @@ def format_duration(seconds: float) -> str:
     except Exception:
         logger.warning(f"Could not format duration for seconds: {seconds}")
         return "??:??"
+
+
+def format_discord_date(timestamp) -> str:
+    """Formats an ISO timestamp as a Discord-localized calendar date."""
+    try:
+        return f"<t:{int(datetime.fromisoformat(timestamp).timestamp())}:D>"
+    except (TypeError, ValueError):
+        return str(timestamp) if timestamp else "Unknown"

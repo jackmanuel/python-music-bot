@@ -6,7 +6,7 @@ The bot uses `!` as its command prefix.
 
 *   `!join`: Joins your current voice channel.
 *   `!leave`: Disconnects from the current voice channel and clears active playback state.
-*   `!play <song name or URL>`: Plays a song from a YouTube search query, YouTube URL, or SoundCloud URL. If something is already playing, the song is added to the queue.
+*   `!play <song name or URL>`: Plays a song from a YouTube search query, YouTube URL, or SoundCloud URL. Playback confirmations include the current server's first queue date/requester and completed lifetime play count. If something is already playing, the confirmation also includes the new song's queue position and estimated wait.
 *   `!search <song name>`: Shows up to five YouTube results and lets you pick one by reacting to the message.
 *   `!skip`: Skips the current song.
 
@@ -15,10 +15,11 @@ The bot uses `!` as its command prefix.
 *   `!queue` or `!q`: Shows the currently playing song and the next queued songs.
 *   `!nowplaying` or `!np`: Shows the current song and playback progress.
 *   `!remove <position>`: Removes a queued song by its queue number.
-*   `!clear`: Clears the current queue.
+*   `!clear`: Clears the waiting queue and marks those requests as skipped without interrupting the current song.
 
 ## Stats
 
+*   `!songinfo <YouTube URL>`: Shows locally stored song metadata, cache status, completed/skipped counts, first request details, and the server's top five requesters for that song. This command does not play or queue the song and makes no `yt-dlp` requests.
 *   `!stats [@user]`: Shows total request count for you or another server member.
 *   `!statslong [@user]`: Shows detailed stats including today, this week, this month, this year, all time, longest streak, and top repeated requests.
 *   `!leaderboard` or `!lb`: Shows the top five song requesters in the server.

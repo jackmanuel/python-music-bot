@@ -168,6 +168,12 @@ class QueueCommandsMixin:
             await ctx.send("The queue is already empty.")
             return
 
+        cleared_count = len(queue)
+        for song_info in queue:
+            request_id = song_info.get('request_id')
+            if request_id:
+                self.db_manager.update_play_status(request_id, 'skipped')
+
         queue.clear()
         await ctx.send("Song queue cleared!")
-        logger.info(f"Queue cleared for guild {guild_id} by command.")
+        logger.info(f"Cleared {cleared_count} queued song(s) in guild {guild_id} by command.")

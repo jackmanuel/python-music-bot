@@ -108,6 +108,9 @@ class DatabaseManager:
                     cursor.execute("""
                         CREATE INDEX IF NOT EXISTS idx_play_history_user_id ON play_history (user_id);
                     """)
+                    cursor.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_play_history_guild_url ON play_history (guild_id, resolved_url);
+                    """)
                     
                     # 5. Drop the old table
                     cursor.execute("DROP TABLE _play_history_old")
@@ -133,6 +136,9 @@ class DatabaseManager:
                     """)
                     cursor.execute("""
                         CREATE INDEX IF NOT EXISTS idx_play_history_user_id ON play_history (user_id);
+                    """)
+                    cursor.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_play_history_guild_url ON play_history (guild_id, resolved_url);
                     """)
                     logger.info(f"Database table 'play_history' initialized successfully in {self.db_file}.")
         except sqlite3.Error as e:
@@ -182,6 +188,135 @@ class DatabaseManager:
             if conn:
                 conn.close()
         return last_row_id
+
+    def get_url_play_stats(self, resolved_url: Optional[str], guild_id: int) -> Optional[Dict[str, Any]]:
+        """Gets one server's first-request details and completed play count for a URL."""
+        if not resolved_url:
+            return None
+
+        conn = self._get_db_connection()
+        if not conn:
+            logger.warning("Failed to get DB connection for fetching URL queue stats.")
+            return None
+
+        try:
+            with conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT
+                        request_timestamp,
+                        user_name,
+                        (
+                            SELECT COUNT(*)
+                            FROM play_history
+                            WHERE resolved_url = ? AND guild_id = ? AND play_status = 'completed'
+                        ) AS play_count
+                    FROM play_history
+                    WHERE resolved_url = ? AND guild_id = ?
+                    ORDER BY request_timestamp ASC, request_id ASC
+                    LIMIT 1
+                """, (resolved_url, guild_id, resolved_url, guild_id))
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    'first_queued_at': row['request_timestamp'],
+                    'first_queued_by': row['user_name'],
+                    'play_count': row['play_count']
+                }
+        except sqlite3.Error as e:
+            logger.error(
+                f"Failed to query play stats for resolved URL '{resolved_url}' in guild {guild_id}: {e}",
+                exc_info=True
+            )
+            return None
+        finally:
+            conn.close()
+
+    def get_song_info(self, resolved_url: str, guild_id: int) -> Optional[Dict[str, Any]]:
+        """Gets server-specific stored metadata, status counts, and requester rankings."""
+        conn = self._get_db_connection()
+        if not conn:
+            logger.warning("Failed to get DB connection for fetching song information.")
+            return None
+
+        try:
+            with conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT request_timestamp, user_id, user_name
+                    FROM play_history
+                    WHERE resolved_url = ? AND guild_id = ?
+                    ORDER BY request_timestamp ASC, request_id ASC
+                    LIMIT 1
+                """, (resolved_url, guild_id))
+                first_request = cursor.fetchone()
+                if not first_request:
+                    return None
+
+                cursor.execute("""
+                    SELECT resolved_title, duration
+                    FROM play_history
+                    WHERE resolved_url = ? AND guild_id = ?
+                    ORDER BY request_timestamp DESC, request_id DESC
+                    LIMIT 1
+                """, (resolved_url, guild_id))
+                latest_metadata = cursor.fetchone()
+
+                cursor.execute("""
+                    SELECT
+                        SUM(CASE WHEN play_status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+                        SUM(CASE WHEN play_status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count
+                    FROM play_history
+                    WHERE resolved_url = ? AND guild_id = ?
+                """, (resolved_url, guild_id))
+                counts = cursor.fetchone()
+
+                cursor.execute("""
+                    SELECT
+                        ph.user_id,
+                        (
+                            SELECT latest.user_name
+                            FROM play_history AS latest
+                            WHERE latest.resolved_url = ph.resolved_url
+                              AND latest.guild_id = ph.guild_id
+                              AND latest.user_id = ph.user_id
+                            ORDER BY latest.request_timestamp DESC, latest.request_id DESC
+                            LIMIT 1
+                        ) AS user_name,
+                        COUNT(*) AS queue_count
+                    FROM play_history AS ph
+                    WHERE ph.resolved_url = ? AND ph.guild_id = ?
+                    GROUP BY ph.user_id
+                    ORDER BY queue_count DESC, MIN(ph.request_timestamp) ASC, ph.user_id ASC
+                    LIMIT 5
+                """, (resolved_url, guild_id))
+                leaderboard = [
+                    {
+                        'user_id': row['user_id'],
+                        'user_name': row['user_name'],
+                        'queue_count': row['queue_count']
+                    }
+                    for row in cursor.fetchall()
+                ]
+
+                return {
+                    'title': latest_metadata['resolved_title'],
+                    'duration': latest_metadata['duration'],
+                    'first_queued_at': first_request['request_timestamp'],
+                    'first_queued_by': first_request['user_name'],
+                    'completed_count': counts['completed_count'] or 0,
+                    'skipped_count': counts['skipped_count'] or 0,
+                    'queue_leaderboard': leaderboard
+                }
+        except sqlite3.Error as e:
+            logger.error(
+                f"Failed to query song information for URL '{resolved_url}' in guild {guild_id}: {e}",
+                exc_info=True
+            )
+            return None
+        finally:
+            conn.close()
 
     def update_play_start_timestamp(self, request_id: int):
         """

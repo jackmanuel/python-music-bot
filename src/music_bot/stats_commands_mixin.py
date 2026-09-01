@@ -5,13 +5,99 @@ import os
 import discord
 from discord.ext import commands
 
+from formatting import format_discord_date
 from leaderboard_graph import generate_cumulative_graph
 from leaderboard_race import generate_race_video
+from youtube import extract_youtube_video_id
 
 logger = logging.getLogger(__name__)
 
 
 class StatsCommandsMixin:
+    @commands.command(name='songinfo', help='Shows stored information for a YouTube URL without playing it.')
+    async def songinfo(self, ctx: commands.Context, youtube_url: str):
+        """Shows locally stored song metadata and request history for this server."""
+        youtube_id = extract_youtube_video_id(youtube_url)
+        if not youtube_id:
+            await ctx.send("Please provide a valid YouTube video URL.")
+            return
+
+        canonical_url = f"https://www.youtube.com/watch?v={youtube_id}"
+        song_info = self.db_manager.get_song_info(canonical_url, ctx.guild.id)
+        cached_path = self.song_cache.get(youtube_id)
+        is_cached = bool(cached_path and os.path.exists(cached_path))
+
+        if not song_info:
+            embed = discord.Embed(
+                title="Song Information",
+                description=f"[Open on YouTube]({canonical_url})",
+                color=discord.Color.orange()
+            )
+            embed.set_thumbnail(url=f"https://i.ytimg.com/vi/{youtube_id}/hqdefault.jpg")
+            embed.add_field(
+                name="History",
+                value="This song has not been queued in this server's database.",
+                inline=False
+            )
+            embed.add_field(name="Cached", value="Yes" if is_cached else "No", inline=True)
+            await ctx.send(embed=embed)
+            return
+
+        title = song_info.get('title') or "Unknown title"
+        embed = discord.Embed(
+            title=title,
+            description=f"[Open on YouTube]({canonical_url})",
+            color=discord.Color.blue()
+        )
+        embed.set_thumbnail(url=f"https://i.ytimg.com/vi/{youtube_id}/hqdefault.jpg")
+        embed.add_field(
+            name="Length",
+            value=self._format_duration(song_info.get('duration')),
+            inline=True
+        )
+        embed.add_field(name="Cached", value="Yes" if is_cached else "No", inline=True)
+        embed.add_field(
+            name="First queued",
+            value=format_discord_date(song_info['first_queued_at']),
+            inline=True
+        )
+        embed.add_field(
+            name="First queued by",
+            value=discord.utils.escape_markdown(str(song_info['first_queued_by'])),
+            inline=True
+        )
+        embed.add_field(name="Completed plays", value=song_info['completed_count'], inline=True)
+        embed.add_field(name="Skipped", value=song_info['skipped_count'], inline=True)
+
+        leaderboard_lines = []
+        rank_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
+        for rank, user_data in enumerate(song_info['queue_leaderboard'], start=1):
+            try:
+                member = ctx.guild.get_member(int(user_data['user_id']))
+            except (TypeError, ValueError):
+                member = None
+            display_name = member.display_name if member else user_data['user_name']
+            rank_display = rank_emojis.get(rank, f"{rank}.")
+            leaderboard_lines.append(
+                f"{rank_display} **{discord.utils.escape_markdown(str(display_name))}** — "
+                f"{user_data['queue_count']} queue(s)"
+            )
+
+        embed.add_field(
+            name="Queue leaderboard",
+            value="\n".join(leaderboard_lines) if leaderboard_lines else "No queue history.",
+            inline=False
+        )
+        await ctx.send(embed=embed)
+
+    @songinfo.error
+    async def songinfo_error(self, ctx: commands.Context, error: commands.CommandError):
+        if isinstance(error, commands.MissingRequiredArgument):
+            await ctx.send("Usage: `!songinfo <YouTube URL>`")
+        else:
+            logger.error(f"Error in songinfo command: {error}", exc_info=True)
+            await ctx.send("An error occurred while fetching song information.")
+
     @commands.command(name='stats', help='Shows song request stats for a user (or yourself) in this server.')
     async def stats(self, ctx: commands.Context, *, member: discord.Member = None):
         """Shows the total number of songs requested by the specified user or yourself in the current server."""

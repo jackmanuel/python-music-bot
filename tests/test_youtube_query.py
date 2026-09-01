@@ -11,6 +11,7 @@ from youtube import (
     REMOTE_COMPONENTS,
     YDL_OPTIONS,
     age_restricted_error_result,
+    extract_youtube_video_id,
     is_age_restricted_yt_dlp_error,
     is_direct_url,
     is_livestream_info,
@@ -24,6 +25,24 @@ import yt_dlp
 
 
 class YoutubeQueryTests(unittest.TestCase):
+    def test_video_id_is_extracted_from_common_youtube_urls(self):
+        video_id = "dQw4w9WgXcQ"
+        urls = [
+            f"https://www.youtube.com/watch?v={video_id}&list=example",
+            f"https://youtu.be/{video_id}?t=10",
+            f"https://www.youtube.com/shorts/{video_id}",
+            f"https://music.youtube.com/watch?v={video_id}"
+        ]
+
+        for url in urls:
+            with self.subTest(url=url):
+                self.assertEqual(extract_youtube_video_id(url), video_id)
+
+    def test_video_id_rejects_non_youtube_and_invalid_urls(self):
+        self.assertIsNone(extract_youtube_video_id("https://example.com/watch?v=dQw4w9WgXcQ"))
+        self.assertIsNone(extract_youtube_video_id("https://youtube.com/watch?v=too-short"))
+        self.assertIsNone(extract_youtube_video_id("not a URL"))
+
     def test_special_character_query_is_forced_to_search(self):
         self.assertEqual(prepare_yt_dlp_query("$$$"), "ytsearch1:$$$")
 

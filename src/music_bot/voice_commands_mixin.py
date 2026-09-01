@@ -5,6 +5,7 @@ import time
 import discord
 from discord.ext import commands
 
+from formatting import format_discord_date
 from youtube import AGE_RESTRICTED_PLAYBACK_MESSAGE, FFMPEG_OPTIONS, video_url_from_entry
 from config import FFMPEG_EXECUTABLE, MAX_SONG_DURATION_SECONDS
 
@@ -20,6 +21,46 @@ class VoiceCommandsMixin:
             not song_info.get('is_cached', False)
             and getattr(self, 'cache_downloads_enabled', True)
             and not song_info.get('exceeds_cache_duration', False)
+        )
+
+    @staticmethod
+    def _estimate_queue_wait_seconds(current_song, songs_ahead, now=None):
+        """Estimates when a new final queue entry will start, or returns None."""
+        now = time.time() if now is None else now
+        wait_seconds = 0.0
+
+        if current_song:
+            duration = current_song.get('duration')
+            start_time = current_song.get('start_time')
+            if not isinstance(duration, (int, float)) or duration < 0:
+                return None
+            if not isinstance(start_time, (int, float)):
+                return None
+            wait_seconds += max(0.0, duration - max(0.0, now - start_time))
+
+        for song in songs_ahead:
+            duration = song.get('duration')
+            if not isinstance(duration, (int, float)) or duration < 0:
+                return None
+            wait_seconds += duration
+
+        return wait_seconds
+
+    def _add_play_history_to_embed(self, embed, resolved_url, guild_id):
+        """Adds server- and URL-specific history to a playback confirmation embed."""
+        url_stats = self.db_manager.get_url_play_stats(resolved_url, guild_id)
+        if not url_stats:
+            return
+
+        first_queued_by = discord.utils.escape_markdown(str(url_stats['first_queued_by']))
+        embed.add_field(
+            name="Play history",
+            value=(
+                f"First queued: {format_discord_date(url_stats['first_queued_at'])}\n"
+                f"First queued by: **{first_queued_by}**\n"
+                f"Total plays: **{url_stats['play_count']}**"
+            ),
+            inline=False
         )
 
     @commands.command(name='join', help='Joins the voice channel you are currently in.')
@@ -225,11 +266,25 @@ class VoiceCommandsMixin:
 
         is_active = vc.is_playing() or vc.is_paused() or (guild_id in self.current_song and self.current_song[guild_id] is not None)
         if is_active:
+             songs_ahead = list(queue)
+             current_song = self.current_song.get(guild_id)
+             estimated_wait = (
+                 self._estimate_queue_wait_seconds(current_song, songs_ahead)
+                 if current_song else None
+             )
              queue.append(song_info)
              embed = discord.Embed(title="Added to Queue", description=f"[{song_info['title']}]({song_info['webpage_url']})", color=discord.Color.blue())
              if song_info.get('thumbnail'):
                  embed.set_thumbnail(url=song_info['thumbnail'])
              embed.add_field(name="Position in queue", value=len(queue))
+             if vc.is_paused():
+                 embed.add_field(name="Estimated wait", value="Unavailable while playback is paused", inline=True)
+             elif estimated_wait is None:
+                 embed.add_field(name="Estimated wait", value="Unavailable (unknown song duration)", inline=True)
+             else:
+                 embed.add_field(name="Estimated wait", value=self._format_duration(estimated_wait), inline=True)
+
+             self._add_play_history_to_embed(embed, song_info.get('webpage_url'), guild_id)
              if song_info.get('is_cached', False):
                  if song_info.get('was_previously_cached', False):
                      embed.add_field(name="Source", value="📁 Cached", inline=True)
@@ -264,6 +319,7 @@ class VoiceCommandsMixin:
                     embed.set_thumbnail(url=song_info['thumbnail'])
                 if song_info.get('duration'):
                     embed.add_field(name="Duration", value=self._format_duration(song_info['duration']))
+                self._add_play_history_to_embed(embed, song_info.get('webpage_url'), guild_id)
                 if song_info.get('is_cached', False):
                     if song_info.get('was_previously_cached', False):
                         embed.add_field(name="Source", value="📁 Cached", inline=True)
