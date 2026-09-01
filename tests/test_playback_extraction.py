@@ -1,5 +1,6 @@
 import concurrent.futures
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -9,15 +10,18 @@ SRC_DIR = PROJECT_ROOT / "src" / "music_bot"
 sys.path.insert(0, str(SRC_DIR))
 
 from playback_mixin import PlaybackMixin
+from song_cache import SongCache
 
 
 class PlaybackExtractionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.mixin = PlaybackMixin()
         self.mixin.process_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.mixin.thread_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
     async def asyncTearDown(self):
         self.mixin.process_executor.shutdown(wait=True)
+        self.mixin.thread_executor.shutdown(wait=True)
 
     @patch("playback_mixin.run_yt_dlp_search", return_value={"entries": []})
     async def test_empty_search_entries_are_reported_clearly(self, _mock_search):
@@ -29,6 +33,46 @@ class PlaybackExtractionTests(unittest.IsolatedAsyncioTestCase):
             "yt-dlp returned no playable entries for 'missing song'",
             "\n".join(captured_logs.output),
         )
+
+    async def test_over_limit_download_is_removed_and_streamed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_dir = Path(temp_dir)
+            self.mixin.song_cache = SongCache(
+                cache_dir,
+                max_size_bytes=5,
+                warning_threshold_bytes=1,
+            )
+
+            search_data = {
+                "id": "abc123",
+                "title": "Test Song",
+                "url": "https://example.com/audio-stream",
+                "webpage_url": "https://example.com/watch/abc123",
+                "duration": 120,
+            }
+
+            def download_to_cache(_query, _download):
+                (cache_dir / "youtube-abc123.opus").write_bytes(b"123456")
+                return {
+                    "id": "abc123",
+                    "title": "Test Song",
+                    "ext": "opus",
+                    "extractor": "youtube",
+                }
+
+            with (
+                patch("playback_mixin.SONG_CACHE_DIR", cache_dir),
+                patch("playback_mixin.run_yt_dlp_search", return_value=search_data),
+                patch("playback_mixin.run_yt_dlp_extractor", side_effect=download_to_cache),
+            ):
+                result = await self.mixin._extract_info(
+                    "https://example.com/watch/abc123",
+                    download=True,
+                )
+
+            self.assertFalse(result["is_cached"])
+            self.assertEqual(result["url"], "https://example.com/audio-stream")
+            self.assertFalse((cache_dir / "youtube-abc123.opus").exists())
 
 
 if __name__ == "__main__":

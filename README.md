@@ -15,6 +15,7 @@ I built this for my own Discord server, and I am open sourcing it mainly as a pr
 *   Provides a small local web interface for live logs, restart, and shutdown.
 *   Automatically disconnects from empty or inactive voice channels.
 *   Streams very long songs instead of downloading them, keeping cache size reasonable.
+*   Limits the cache to 30 GB by default, warns when less than 1 GB remains, and streams uncached songs when full.
 
 ## Stats And Play History
 

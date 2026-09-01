@@ -92,6 +92,7 @@ class PlaybackMixin:
 
             duration = data.get('duration')
             exceeds_cache_duration = bool(duration and duration > MAX_SONG_DURATION_SECONDS)
+            estimated_size_bytes = data.get('filesize') or data.get('filesize_approx') or 0
 
             cached_file = self.song_cache.get(youtube_id)
             if cached_file and os.path.exists(cached_file):
@@ -107,7 +108,8 @@ class PlaybackMixin:
                     'start_time': None,
                     'is_cached': True,
                     'was_previously_cached': True,
-                    'exceeds_cache_duration': exceeds_cache_duration
+                    'exceeds_cache_duration': exceeds_cache_duration,
+                    'estimated_size_bytes': estimated_size_bytes,
                 }
                 return song_info
 
@@ -129,7 +131,28 @@ class PlaybackMixin:
                         'start_time': None,
                         'is_cached': False,
                         'was_previously_cached': False,
-                        'exceeds_cache_duration': True
+                        'exceeds_cache_duration': True,
+                        'estimated_size_bytes': estimated_size_bytes,
+                    }
+
+                if not self.song_cache.can_accept_download(estimated_size_bytes):
+                    logger.info(
+                        f"Streaming '{query}' instead of caching because the cache size limit "
+                        "has been reached."
+                    )
+                    return {
+                        'title': data.get('title', 'Unknown Title'),
+                        'url': data.get('url'),
+                        'thumbnail': data.get('thumbnail'),
+                        'duration': data.get('duration'),
+                        'webpage_url': data.get('webpage_url', query),
+                        'channel': data.get('channel', 'Unknown Channel'),
+                        'youtube_id': youtube_id,
+                        'start_time': None,
+                        'is_cached': False,
+                        'was_previously_cached': False,
+                        'exceeds_cache_duration': False,
+                        'estimated_size_bytes': estimated_size_bytes,
                     }
 
                 if getattr(self, 'is_shutting_down', False):
@@ -182,7 +205,28 @@ class PlaybackMixin:
                             break
                 
                 if found_file:
-                    self.song_cache.add(youtube_id, found_file)
+                    if not self.song_cache.add(youtube_id, found_file):
+                        try:
+                            os.remove(found_file)
+                        except OSError as removal_error:
+                            logger.error(
+                                f"Failed to remove over-limit cache file {found_file}: {removal_error}"
+                            )
+                        self.song_cache.refresh_capacity()
+                        return {
+                            'title': data.get('title') or downloaded_data.get('title', 'Unknown Title'),
+                            'url': data.get('url'),
+                            'thumbnail': data.get('thumbnail') or downloaded_data.get('thumbnail'),
+                            'duration': data.get('duration') or downloaded_data.get('duration'),
+                            'webpage_url': data.get('webpage_url') or downloaded_data.get('webpage_url', query),
+                            'channel': data.get('channel') or downloaded_data.get('channel', 'Unknown Channel'),
+                            'youtube_id': youtube_id,
+                            'start_time': None,
+                            'is_cached': False,
+                            'was_previously_cached': False,
+                            'exceeds_cache_duration': False,
+                            'estimated_size_bytes': estimated_size_bytes,
+                        }
                     logger.info(f"Successfully downloaded and cached '{query}' at {found_file}")
                     
                     song_info = {
@@ -196,7 +240,8 @@ class PlaybackMixin:
                         'start_time': None,
                         'is_cached': True,
                         'was_previously_cached': False,
-                        'exceeds_cache_duration': False
+                        'exceeds_cache_duration': False,
+                        'estimated_size_bytes': estimated_size_bytes,
                     }
                     return song_info
                 else:
@@ -214,7 +259,8 @@ class PlaybackMixin:
                     'start_time': None,
                     'is_cached': False,
                     'was_previously_cached': False,
-                    'exceeds_cache_duration': exceeds_cache_duration
+                    'exceeds_cache_duration': exceeds_cache_duration,
+                    'estimated_size_bytes': estimated_size_bytes,
                 }
 
         except Exception as e:

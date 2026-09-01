@@ -17,10 +17,17 @@ CANCEL_SEARCH_REACTION = "❌"
 
 class VoiceCommandsMixin:
     def _should_download_to_cache(self, song_info):
+        if (
+            song_info.get('is_cached', False)
+            or not getattr(self, 'cache_downloads_enabled', True)
+            or song_info.get('exceeds_cache_duration', False)
+        ):
+            return False
+
+        song_cache = getattr(self, 'song_cache', None)
         return (
-            not song_info.get('is_cached', False)
-            and getattr(self, 'cache_downloads_enabled', True)
-            and not song_info.get('exceeds_cache_duration', False)
+            song_cache is None
+            or song_cache.can_accept_download(song_info.get('estimated_size_bytes', 0))
         )
 
     @staticmethod

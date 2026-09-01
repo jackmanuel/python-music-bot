@@ -36,6 +36,39 @@ class SongCacheTests(unittest.TestCase):
 
         self.assertEqual(cache.get("abc123"), str(cached_file))
 
+    def test_rejects_file_that_exceeds_hard_limit(self):
+        cache_dir = self.temp_dir / "song_cache"
+        cache_dir.mkdir()
+        cache = SongCache(cache_dir, max_size_bytes=5, warning_threshold_bytes=1)
+
+        cached_file = cache_dir / "youtube-abc123.opus"
+        cached_file.write_bytes(b"123456")
+
+        self.assertFalse(cache.add("abc123", str(cached_file)))
+        self.assertIsNone(cache.get("abc123"))
+
+    def test_warns_when_cache_is_almost_full(self):
+        cache_dir = self.temp_dir / "song_cache"
+        cache_dir.mkdir()
+        (cache_dir / "youtube-abc123.opus").write_bytes(b"12345678")
+
+        with self.assertLogs("song_cache", level="WARNING") as captured_logs:
+            SongCache(cache_dir, max_size_bytes=10, warning_threshold_bytes=3)
+
+        self.assertIn("Song cache is almost full", "\n".join(captured_logs.output))
+
+    def test_accepts_file_that_exactly_reaches_hard_limit(self):
+        cache_dir = self.temp_dir / "song_cache"
+        cache_dir.mkdir()
+        cache = SongCache(cache_dir, max_size_bytes=5, warning_threshold_bytes=1)
+
+        cached_file = cache_dir / "youtube-abc123.opus"
+        cached_file.write_bytes(b"12345")
+
+        self.assertTrue(cache.add("abc123", str(cached_file)))
+        self.assertEqual(cache.get("abc123"), str(cached_file))
+        self.assertFalse(cache.can_accept_download())
+
 
 if __name__ == "__main__":
     unittest.main()

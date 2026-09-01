@@ -6,7 +6,13 @@ from collections import deque
 from discord.ext import commands
 
 from cache_commands_mixin import CacheCommandsMixin
-from config import CACHE_DOWNLOADS_ENABLED, DATABASE_FILE, SONG_CACHE_DIR
+from config import (
+    CACHE_DOWNLOADS_ENABLED,
+    CACHE_MAX_SIZE_BYTES,
+    CACHE_WARNING_THRESHOLD_BYTES,
+    DATABASE_FILE,
+    SONG_CACHE_DIR,
+)
 from database_manager import DatabaseManager
 from formatting import format_duration
 from playback_mixin import PlaybackMixin
@@ -36,7 +42,12 @@ class MusicCog(
         self.last_activity = {}
         self.is_shutting_down = False
         self.cache_downloads_enabled = CACHE_DOWNLOADS_ENABLED
-        self.song_cache = SongCache(SONG_CACHE_DIR, create_if_missing=self.cache_downloads_enabled)
+        self.song_cache = SongCache(
+            SONG_CACHE_DIR,
+            create_if_missing=self.cache_downloads_enabled,
+            max_size_bytes=CACHE_MAX_SIZE_BYTES,
+            warning_threshold_bytes=CACHE_WARNING_THRESHOLD_BYTES,
+        )
         if self.cache_downloads_enabled:
             logger.info("Song cache downloads are enabled.")
         else:

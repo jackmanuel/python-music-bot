@@ -39,6 +39,17 @@ class CacheDownloadPolicyTests(unittest.TestCase):
             })
         )
 
+    def test_uncached_song_streams_when_cache_is_full(self):
+        class FullCache:
+            def can_accept_download(self, _estimated_size_bytes):
+                return False
+
+        mixin = VoiceCommandsMixin()
+        mixin.cache_downloads_enabled = True
+        mixin.song_cache = FullCache()
+
+        self.assertFalse(mixin._should_download_to_cache({"is_cached": False}))
+
 
 if __name__ == "__main__":
     unittest.main()
