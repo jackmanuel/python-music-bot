@@ -11,6 +11,18 @@ from config import SONG_CACHE_DIR
 logger = logging.getLogger(__name__)
 
 
+def youtube_id_from_cache_path(file_path):
+    """Extract a YouTube video ID from a yt-dlp cache filename."""
+    filename = os.path.basename(file_path)
+    stem, extension = os.path.splitext(filename)
+    if extension.lower() not in ('.opus', '.m4a', '.webm', '.mp3', '.aac', '.wav'):
+        return None
+    if not stem.startswith('youtube-'):
+        return None
+    youtube_id = stem[len('youtube-'):]
+    return youtube_id or None
+
+
 class CacheCommandsMixin:
     @commands.command(name='cache', help='Shows information about the song cache.')
     async def cache_info(self, ctx: commands.Context):
@@ -53,6 +65,85 @@ class CacheCommandsMixin:
 
         embed.add_field(name="\u200b", value="\u200b", inline=True)
         
+        await ctx.send(embed=embed)
+
+    @commands.command(
+        name='cacheleaderboard',
+        aliases=['cachelb'],
+        help='Shows which users are responsible for the most cached music.'
+    )
+    async def cache_leaderboard(self, ctx: commands.Context):
+        """Credit each cached YouTube file to its earliest recorded requester."""
+        logger.info("Cache leaderboard command invoked by %s in guild %s", ctx.author, ctx.guild.id)
+        self.last_activity[ctx.guild.id] = time.time()
+
+        cache_files = []
+        for file_path in self.song_cache.values():
+            youtube_id = youtube_id_from_cache_path(file_path)
+            if not youtube_id:
+                continue
+            try:
+                size_bytes = os.path.getsize(file_path)
+            except OSError:
+                continue
+            cache_files.append((youtube_id, size_bytes))
+
+        try:
+            requesters = self.db_manager.get_first_youtube_requesters(
+                {youtube_id for youtube_id, _ in cache_files},
+                guild_id=ctx.guild.id
+            )
+        except Exception as e:
+            logger.error("Error matching cache files to requesters: %s", e, exc_info=True)
+            await ctx.send("An error occurred while generating the cache leaderboard.")
+            return
+
+        totals = {}
+        for youtube_id, size_bytes in cache_files:
+            requester = requesters.get(youtube_id)
+            if not requester:
+                continue
+            user_id = requester['user_id']
+            user_total = totals.setdefault(
+                user_id,
+                {
+                    'user_name': requester['user_name'],
+                    'size_bytes': 0,
+                    'file_count': 0
+                }
+            )
+            user_total['size_bytes'] += size_bytes
+            user_total['file_count'] += 1
+
+        if not totals:
+            await ctx.send("No cached YouTube files could be matched to request history.")
+            return
+
+        ranked_users = sorted(
+            totals.items(),
+            key=lambda item: (-item[1]['size_bytes'], item[1]['user_name'].casefold())
+        )[:10]
+        rank_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
+        description_lines = []
+        for rank, (user_id, data) in enumerate(ranked_users, start=1):
+            member = ctx.guild.get_member(user_id)
+            display_name = member.display_name if member else data['user_name']
+            safe_name = discord.utils.escape_markdown(display_name)
+            size_mb = data['size_bytes'] / (1024 * 1024)
+            file_label = "file" if data['file_count'] == 1 else "files"
+            description_lines.append(
+                f"{rank_emojis.get(rank, f'{rank}.')} **{safe_name}** — "
+                f"**{size_mb:.2f} MB** ({data['file_count']} {file_label})"
+            )
+
+        embed = discord.Embed(
+            title="📁 Cache Leaderboard",
+            description="\n".join(description_lines),
+            color=discord.Color.gold()
+        )
+        embed.set_footer(
+            text="Files are credited to their earliest recorded requester in this server."
+        )
         await ctx.send(embed=embed)
     
     @commands.command(name='clearcache', help='Clears the song cache (admin only).')

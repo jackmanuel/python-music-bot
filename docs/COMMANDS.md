@@ -30,6 +30,7 @@ The bot uses `!` as its command prefix.
 ## Cache
 
 *   `!cache`: Shows the number of cached songs, approximate cache size, and active cache mode.
+*   `!cacheleaderboard` or `!cachelb`: Ranks users by the total size of YouTube cache files credited to their earliest requests in the current server. Cache files without matching server history are skipped.
 *   `!clearcache`: Clears cached `.opus` files. Requires administrator permissions and a typed confirmation.
 
 New cache downloads are also removed automatically when their song is skipped within the first 30 seconds of playback. Previously cached songs are not affected.

@@ -38,6 +38,7 @@ The most commonly used commands are:
 *   `!stats [@user]`: Shows request stats.
 *   `!leaderboard` or `!lb`: Shows the top requesters.
 *   `!songleaderboard` or `!songlb`: Shows the top 10 songs by completed plays.
+*   `!cacheleaderboard` or `!cachelb`: Shows who in the current server is responsible for the most cached music by file size.
 *   `!cg`: Generates a cumulative play graph.
 *   `!leaderboardrace`: Generates an animated leaderboard race video.
 

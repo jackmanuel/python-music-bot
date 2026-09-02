@@ -3,11 +3,12 @@ import os
 import re
 import shutil
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 import yt_dlp
 
 from config import FFMPEG_EXECUTABLE, SONG_CACHE_DIR
+from youtube_urls import extract_youtube_video_id
 
 logger = logging.getLogger(__name__)
 
@@ -16,33 +17,6 @@ SEARCH_PREFIXES = ("ytsearch", "ytsearchdate", "scsearch")
 SEARCH_RESULT_COUNT = 5
 AGE_RESTRICTED_PLAYBACK_MESSAGE = "Cannot play video, it is age restricted."
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-YOUTUBE_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
-
-
-def extract_youtube_video_id(url: str) -> str | None:
-    """Extracts a video ID from common YouTube URL formats without network access."""
-    try:
-        parsed = urlparse(url.strip())
-    except (AttributeError, ValueError):
-        return None
-
-    host = (parsed.hostname or "").lower()
-    if host.startswith("www."):
-        host = host[4:]
-
-    video_id = None
-    if host == "youtu.be":
-        video_id = parsed.path.strip("/").split("/")[0]
-    elif host in {"youtube.com", "m.youtube.com", "music.youtube.com"}:
-        path_parts = [part for part in parsed.path.split("/") if part]
-        if parsed.path.rstrip("/") == "/watch":
-            video_id = parse_qs(parsed.query).get("v", [None])[0]
-        elif len(path_parts) >= 2 and path_parts[0] in {"shorts", "embed", "live"}:
-            video_id = path_parts[1]
-
-    return video_id if video_id and YOUTUBE_VIDEO_ID_RE.fullmatch(video_id) else None
-
-
 def first_existing_path(*candidates) -> str | None:
     for candidate in candidates:
         if candidate and Path(candidate).exists():

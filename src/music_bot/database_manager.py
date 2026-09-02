@@ -5,6 +5,8 @@ from datetime import datetime, timezone, timedelta
 import os
 from typing import Union, Optional, List, Dict, Any
 
+from youtube_urls import extract_youtube_video_id
+
 logger = logging.getLogger(__name__)
 
 class DatabaseManager:
@@ -495,6 +497,48 @@ class DatabaseManager:
             if conn:
                 conn.close()
         return leaderboard_data
+
+    def get_first_youtube_requesters(
+        self,
+        youtube_ids: set[str],
+        guild_id: int
+    ) -> Dict[str, Dict[str, Any]]:
+        """Return one server's earliest requester for each requested YouTube ID."""
+        if not youtube_ids:
+            return {}
+
+        conn = self._get_db_connection()
+        if not conn:
+            logger.warning("Failed to get DB connection for matching cached YouTube files.")
+            return {}
+
+        requesters: Dict[str, Dict[str, Any]] = {}
+        try:
+            with conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT resolved_url, user_id, user_name
+                    FROM play_history
+                    WHERE resolved_url IS NOT NULL AND guild_id = ?
+                    ORDER BY request_timestamp ASC, request_id ASC
+                """, (guild_id,))
+                for row in cursor.fetchall():
+                    youtube_id = extract_youtube_video_id(row['resolved_url'])
+                    if youtube_id not in youtube_ids or youtube_id in requesters:
+                        continue
+                    requesters[youtube_id] = {
+                        'user_id': int(row['user_id']),
+                        'user_name': row['user_name']
+                    }
+                    if len(requesters) == len(youtube_ids):
+                        break
+        except sqlite3.Error as e:
+            logger.error("Failed to match cached YouTube files to requesters: %s", e, exc_info=True)
+            return {}
+        finally:
+            conn.close()
+
+        return requesters
 
     def get_song_leaderboard(
         self,
