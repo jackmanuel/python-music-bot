@@ -174,6 +174,51 @@ class StatsCommandsMixin:
 
         await ctx.send(embed=embed)
 
+    @commands.command(
+        name='songleaderboard',
+        aliases=['songlb'],
+        help='Shows the top 10 songs in this server.'
+    )
+    async def song_leaderboard(self, ctx: commands.Context):
+        """Displays the songs with the most completed plays in this server."""
+        logger.info(f"Song leaderboard command invoked by {ctx.author} in guild {ctx.guild.id}")
+
+        try:
+            songs = self.db_manager.get_song_leaderboard(
+                guild_id=ctx.guild.id,
+                limit=10
+            )
+        except Exception as e:
+            logger.error(f"Error fetching song leaderboard data: {e}", exc_info=True)
+            await ctx.send("An error occurred while fetching the song leaderboard.")
+            return
+
+        if not songs:
+            await ctx.send("No completed song plays found in this server.")
+            return
+
+        rank_emojis = {1: "🥇", 2: "🥈", 3: "🥉"}
+        description_lines = []
+        for rank, song in enumerate(songs, start=1):
+            rank_display = rank_emojis.get(rank, f"{rank}.")
+            song_title = str(song['title'])
+            if len(song_title) > 100:
+                song_title = f"{song_title[:97]}..."
+            safe_title = discord.utils.escape_markdown(song_title)
+            play_count = song['play_count']
+            play_label = "play" if play_count == 1 else "plays"
+            description_lines.append(
+                f"{rank_display} **{safe_title}** — **{play_count}** {play_label}"
+            )
+
+        embed = discord.Embed(
+            title="🎵 Top 10 Songs",
+            description="\n".join(description_lines),
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text="Counts completed plays only.")
+        await ctx.send(embed=embed)
+
     @commands.command(name='statslong', help='Shows detailed song request stats for a user.')
     async def statslong(self, ctx: commands.Context, *, member: discord.Member = None):
         """Shows detailed statistics for a user."""

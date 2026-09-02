@@ -23,6 +23,7 @@ The bot uses `!` as its command prefix.
 *   `!stats [@user]`: Shows total request count for you or another server member.
 *   `!statslong [@user]`: Shows detailed stats including today, this week, this month, this year, all time, longest streak, and top repeated requests.
 *   `!leaderboard` or `!lb`: Shows the top five song requesters in the server.
+*   `!songleaderboard` or `!songlb`: Shows the top 10 songs by completed plays.
 *   `!cumulativegraph` or `!cg`: Generates a static cumulative song-play graph from the SQLite play history.
 *   `!leaderboardrace` or `!lbrace`: Generates an animated leaderboard race video from the SQLite play history.
 

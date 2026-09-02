@@ -496,6 +496,82 @@ class DatabaseManager:
                 conn.close()
         return leaderboard_data
 
+    def get_song_leaderboard(
+        self,
+        guild_id: int,
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Gets the most-played songs from completed plays in one server."""
+        conn = self._get_db_connection()
+        if not conn:
+            logger.warning(
+                f"Failed to get DB connection for fetching the song leaderboard in guild {guild_id}."
+            )
+            return []
+
+        try:
+            with conn:
+                cursor = conn.cursor()
+                start_time = time.time()
+                cursor.execute("""
+                    WITH completed_plays AS (
+                        SELECT
+                            request_id,
+                            request_timestamp,
+                            resolved_title,
+                            resolved_url,
+                            CASE
+                                WHEN resolved_url IS NOT NULL THEN 'url:' || resolved_url
+                                ELSE 'title:' || COALESCE(resolved_title, '')
+                            END AS song_key
+                        FROM play_history
+                        WHERE guild_id = ? AND play_status = 'completed'
+                    ),
+                    song_metadata AS (
+                        SELECT *,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY song_key
+                                ORDER BY request_timestamp DESC, request_id DESC
+                            ) AS metadata_rank
+                        FROM completed_plays
+                    ),
+                    song_totals AS (
+                        SELECT song_key, COUNT(*) AS play_count, MIN(request_timestamp) AS first_play
+                        FROM completed_plays
+                        GROUP BY song_key
+                    )
+                    SELECT
+                        sm.resolved_title,
+                        sm.resolved_url,
+                        st.play_count
+                    FROM song_totals AS st
+                    JOIN song_metadata AS sm
+                      ON sm.song_key = st.song_key AND sm.metadata_rank = 1
+                    ORDER BY st.play_count DESC, st.first_play ASC, sm.resolved_title COLLATE NOCASE ASC
+                    LIMIT ?
+                """, (guild_id, limit))
+                results = [
+                    {
+                        'title': row['resolved_title'] or "Unknown title",
+                        'url': row['resolved_url'],
+                        'play_count': row['play_count']
+                    }
+                    for row in cursor.fetchall()
+                ]
+                elapsed_ms = (time.time() - start_time) * 1000
+                logger.info(
+                    f"Song leaderboard query took {elapsed_ms:.2f}ms and returned {len(results)} songs"
+                )
+                return results
+        except sqlite3.Error as e:
+            logger.error(
+                f"Failed to query the song leaderboard for guild {guild_id}: {e}",
+                exc_info=True
+            )
+            return []
+        finally:
+            conn.close()
+
     def get_user_stats_long(self, user_id: int, guild_id: int) -> Dict[str, Any]:
         """
         Gets detailed statistics for a given user ID within a specific guild.

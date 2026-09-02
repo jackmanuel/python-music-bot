@@ -37,6 +37,7 @@ The most commonly used commands are:
 *   `!skip`: Skips the current song.
 *   `!stats [@user]`: Shows request stats.
 *   `!leaderboard` or `!lb`: Shows the top requesters.
+*   `!songleaderboard` or `!songlb`: Shows the top 10 songs by completed plays.
 *   `!cg`: Generates a cumulative play graph.
 *   `!leaderboardrace`: Generates an animated leaderboard race video.
 
