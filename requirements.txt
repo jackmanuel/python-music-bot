@@ -1,6 +1,6 @@
 discord.py
 aiohttp
-davey
+davey==0.1.7
 yt-dlp
 python-dotenv
 PyNaCl
