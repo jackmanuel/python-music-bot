@@ -78,6 +78,8 @@ To avoid creating new cached song files, run `start_bot_no_cache.bat` instead. I
 
 Open `http://localhost:8000` to view live logs, restart the bot, or shut it down. You can also run `stop_bot.bat` to send the same graceful shutdown request.
 
+The dashboard also accepts IPv4 connections from other computers. Open `http://<bot-host-LAN-IP>:8000` from another device on your network. The dashboard has no authentication, so restrict TCP port 8000 to trusted devices using the host firewall and do not forward it through your router.
+
 ## Project Structure
 
 *   `src/music_bot/`: Bot source code and supporting Python modules.

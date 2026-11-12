@@ -37,5 +37,5 @@ CACHE_DOWNLOADS_ENABLED = not DISABLE_CACHE_DOWNLOADS
 DATABASE_FILE = project_path_from_env("DATABASE_FILE_PATH", BASE_DIR / "database" / "music_log.db")
 LOG_FILE = project_path_from_env("LOG_FILE_PATH", BASE_DIR / "logs" / "music_bot.log")
 
-SERVER_HOST = "localhost"
+SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 8000
