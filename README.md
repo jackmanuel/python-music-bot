@@ -80,6 +80,20 @@ Open `http://localhost:8000` to view live logs, restart the bot, or shut it down
 
 The dashboard also accepts IPv4 connections from other computers. Open `http://<bot-host-LAN-IP>:8000` from another device on your network. The dashboard has no authentication, so restrict TCP port 8000 to trusted devices using the host firewall and do not forward it through your router.
 
+## Setup For Linux
+
+Install Python 3.10 or newer, FFmpeg, `ss` (provided by `iproute2`), and `curl`. Then create the virtual environment and install the Python dependencies:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+cp .env.example .env
+```
+
+Set `DISCORD_BOT_TOKEN` in `.env`, then run `./start_bot.sh` to launch the bot in the background. Use `./start_bot_no_cache.sh` to disable new cache downloads, and `./stop_bot.sh` to shut down gracefully.
+
+Startup output is written to `logs/launcher.log`. The same web dashboard is available at `http://localhost:8000`.
+
 ## Project Structure
 
 *   `src/music_bot/`: Bot source code and supporting Python modules.
