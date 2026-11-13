@@ -1,5 +1,4 @@
 discord.py
-aiohttp
 davey==0.1.7
 yt-dlp
 python-dotenv

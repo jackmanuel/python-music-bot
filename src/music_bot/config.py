@@ -6,7 +6,6 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 SONG_CACHE_DIR = BASE_DIR / "song_cache"
-LOG_VIEWER_TEMPLATE = BASE_DIR / "web" / "templates" / "log_viewer.html"
 
 
 def project_path_from_env(env_var: str, default: Path) -> Path:
@@ -36,6 +35,3 @@ CACHE_DOWNLOADS_ENABLED = not DISABLE_CACHE_DOWNLOADS
 
 DATABASE_FILE = project_path_from_env("DATABASE_FILE_PATH", BASE_DIR / "database" / "music_log.db")
 LOG_FILE = project_path_from_env("LOG_FILE_PATH", BASE_DIR / "logs" / "music_bot.log")
-
-SERVER_HOST = "0.0.0.0"
-SERVER_PORT = 8000

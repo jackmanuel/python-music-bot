@@ -11,7 +11,6 @@ from database_manager import DatabaseManager
 from formatting import format_duration
 from logging_config import setup_logging
 from music_cog import MusicCog
-from web_server import start_web_server
 
 logger = logging.getLogger(__name__)
 
@@ -63,17 +62,13 @@ async def main():
     async with bot:
         await bot.add_cog(MusicCog(bot))
 
-        web_server_task = asyncio.create_task(start_web_server(bot))
-
         logger.info("Starting bot...")
         try:
             await bot.start(DISCORD_TOKEN)
         except discord.LoginFailure:
             logger.critical("Login failed: Invalid Discord token provided.")
         finally:
-            logger.info("Bot has been closed. Cleaning up remaining tasks.")
-            if not web_server_task.done():
-                web_server_task.cancel()
+            logger.info("Bot has been closed.")
 
 
 if __name__ == "__main__":

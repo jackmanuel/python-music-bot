@@ -37,8 +37,6 @@ def setup_logging(log_file_path: str = "logs/music_bot.log", level: int = loggin
     stream_handler.setFormatter(formatter)
     root_logger.addHandler(stream_handler)
 
-    # This prevents the console from being spammed by web server access logs
-    logging.getLogger('aiohttp.access').setLevel(logging.WARNING)
     logging.getLogger('yt-dlp').setLevel(logging.INFO)
 
     logging.info(f"Logging configured. Log level: {logging.getLevelName(level)}. Log file: {os.path.abspath(log_file_path)}")
