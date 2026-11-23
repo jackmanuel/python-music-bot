@@ -3,17 +3,19 @@ import os
 import re
 import shutil
 from pathlib import Path
-from urllib.parse import urlparse
 
 import yt_dlp
 
 from config import FFMPEG_EXECUTABLE, SONG_CACHE_DIR
-from youtube_urls import extract_youtube_video_id
+from youtube_urls import (
+    SEARCH_PREFIXES,
+    SUPPORTED_URL_SCHEMES,
+    extract_youtube_video_id,
+    is_direct_url,
+)
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_URL_SCHEMES = {"http", "https"}
-SEARCH_PREFIXES = ("ytsearch", "ytsearchdate", "scsearch")
 SEARCH_RESULT_COUNT = 5
 AGE_RESTRICTED_PLAYBACK_MESSAGE = "Cannot play video, it is age restricted."
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -82,12 +84,6 @@ FFMPEG_OPTIONS = {
     'options': '-vn',
     'executable': FFMPEG_EXECUTABLE
 }
-
-
-def is_direct_url(query: str) -> bool:
-    """Return True when yt-dlp should treat the query as a direct URL."""
-    parsed = urlparse(query.strip())
-    return parsed.scheme in SUPPORTED_URL_SCHEMES and bool(parsed.netloc)
 
 
 def prepare_yt_dlp_query(query: str, search_count: int = 1) -> str:

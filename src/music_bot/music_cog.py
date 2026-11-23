@@ -62,6 +62,7 @@ class MusicCog(
         self.thread_executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
 
         self.db_manager = DatabaseManager(DATABASE_FILE)
+        self.db_manager.reconcile_cache(self.song_cache.youtube_ids_on_disk())
 
         self.inactivity_check.start()
 

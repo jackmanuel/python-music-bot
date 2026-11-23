@@ -7,6 +7,7 @@ from discord.ext import commands
 
 from formatting import format_discord_date
 from youtube import AGE_RESTRICTED_PLAYBACK_MESSAGE, FFMPEG_OPTIONS, video_url_from_entry
+from youtube_urls import normalize_search_query
 from config import FFMPEG_EXECUTABLE, MAX_SONG_DURATION_SECONDS
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 SEARCH_REACTION_CHOICES = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
 CANCEL_SEARCH_REACTION = "❌"
 EARLY_SKIP_CACHE_EVICTION_SECONDS = 30
+QUERY_CACHE_INVALIDATION_SKIP_SECONDS = 10
 
 
 class VoiceCommandsMixin:
@@ -194,6 +196,7 @@ class VoiceCommandsMixin:
         queue = self.get_queue(guild_id)
 
         query_stripped = query.strip()
+        search_query_normalized = normalize_search_query(query_stripped)
         is_url = query_stripped.startswith("http://") or query_stripped.startswith("https://")
         is_soundcloud = is_url and "soundcloud.com" in query_stripped.lower()
 
@@ -255,6 +258,10 @@ class VoiceCommandsMixin:
                 logger.info(f"Sent age-restricted playback message for query: {download_query}")
                 await ctx.send(AGE_RESTRICTED_PLAYBACK_MESSAGE)
                 return
+
+        if search_query_normalized:
+            song_info['search_query_normalized'] = search_query_normalized
+            song_info['source_query_normalized'] = search_query_normalized
 
         try:
             request_id = self.db_manager.log_song_request(
@@ -458,13 +465,34 @@ class VoiceCommandsMixin:
         elapsed_time = time.time() - current.get('start_time', 0)
         duration = current.get('duration')
 
+        matched_cached_query = current.get('matched_cached_query')
+        should_invalidate_query_cache = bool(
+            matched_cached_query and elapsed_time <= QUERY_CACHE_INVALIDATION_SKIP_SECONDS
+        )
+        invalidated_query_cache = False
+        if should_invalidate_query_cache:
+            delete_cached_query = getattr(self.db_manager, 'delete_cached_query', None)
+            if delete_cached_query and delete_cached_query(matched_cached_query):
+                invalidated_query_cache = True
+                logger.info(
+                    "Invalidated cached query %r after early skip (%.1fs) in guild %s.",
+                    matched_cached_query,
+                    elapsed_time,
+                    guild_id,
+                )
+
         if duration is None or duration <= 0 or (elapsed_time / duration) < 0.6:
             if 'request_id' in current:
                 self.db_manager.update_play_status(current['request_id'], 'skipped')
         else:
             if 'request_id' in current:
                 self.db_manager.update_play_status(current['request_id'], 'completed')
-
+            if not should_invalidate_query_cache and current.get('is_cached', False):
+                youtube_id = current.get('youtube_id')
+                search_query = current.get('search_query_normalized') or current.get('source_query_normalized')
+                upsert_cached_query = getattr(self.db_manager, 'upsert_cached_query', None)
+                if youtube_id and search_query and upsert_cached_query:
+                    upsert_cached_query(search_query, youtube_id)
 
         logger.info(f"Skipping song in guild {guild_id} by command: {current['title']}")
         skipped_early = elapsed_time <= EARLY_SKIP_CACHE_EVICTION_SECONDS
@@ -477,6 +505,8 @@ class VoiceCommandsMixin:
         message = f"Skipping: {current['title']}"
         if eviction_status in {'deleted', 'deferred'}:
             message += " — skipped early, so its new cache download will be removed from cache."
+        elif invalidated_query_cache:
+            message += " — skipped early, so the cached search result for this query was cleared."
         await ctx.send(message)
         # The 'after' callback (_play_next) will handle the rest.
         self.current_song[guild_id]['was_skipped'] = True

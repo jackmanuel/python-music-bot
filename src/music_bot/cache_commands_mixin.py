@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 import time
@@ -6,21 +5,9 @@ import time
 import discord
 from discord.ext import commands
 
-from config import SONG_CACHE_DIR
+from youtube_urls import youtube_id_from_cache_path
 
 logger = logging.getLogger(__name__)
-
-
-def youtube_id_from_cache_path(file_path):
-    """Extract a YouTube video ID from a yt-dlp cache filename."""
-    filename = os.path.basename(file_path)
-    stem, extension = os.path.splitext(filename)
-    if extension.lower() not in ('.opus', '.m4a', '.webm', '.mp3', '.aac', '.wav'):
-        return None
-    if not stem.startswith('youtube-'):
-        return None
-    youtube_id = stem[len('youtube-'):]
-    return youtube_id or None
 
 
 class CacheCommandsMixin:
@@ -145,51 +132,3 @@ class CacheCommandsMixin:
             text="Files are credited to their earliest recorded requester in this server."
         )
         await ctx.send(embed=embed)
-    
-    @commands.command(name='clearcache', help='Clears the song cache (admin only).')
-    @commands.has_permissions(administrator=True)
-    async def clear_cache(self, ctx: commands.Context):
-        """Clears all cached songs."""
-        logger.info(f"'clearcache' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id})")
-        
-        if not ctx.author.guild_permissions.administrator:
-            await ctx.send("You need administrator permissions to use this command.")
-            return
-        
-        confirm_msg = await ctx.send("⚠️ This will delete all cached songs. Are you sure? Type `confirm` to proceed.")
-        
-        def check(m):
-            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == "confirm"
-        
-        try:
-            await self.bot.wait_for('message', check=check, timeout=30.0)
-
-            cache_dir = SONG_CACHE_DIR
-            if os.path.exists(cache_dir):
-                for filename in os.listdir(cache_dir):
-                    if filename.endswith(".opus"):
-                        file_path = str(cache_dir / filename)
-                        try:
-                            os.remove(file_path)
-                            logger.info(f"Deleted cached file: {file_path}")
-                        except Exception as e:
-                            logger.error(f"Failed to delete {file_path}: {e}")
-            
-            self.song_cache.clear()
-            
-            await ctx.send("✅ Song cache has been cleared.")
-            logger.info(f"Song cache cleared by {ctx.author} in guild {ctx.guild.id}")
-            
-        except asyncio.TimeoutError:
-            await ctx.send("Cache clear cancelled - no confirmation received.")
-        except Exception as e:
-            await ctx.send(f"An error occurred while clearing the cache: {e}")
-            logger.exception(f"Error in clear_cache command: {e}")
-    
-    @clear_cache.error
-    async def clear_cache_error(self, ctx: commands.Context, error: commands.CommandError):
-        """Handles errors for the clearcache command."""
-        if isinstance(error, commands.MissingPermissions):
-            await ctx.send("You need administrator permissions to use this command.")
-        else:
-            logger.error(f"An unexpected error occurred in the clear_cache command: {error}")

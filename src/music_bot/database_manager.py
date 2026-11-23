@@ -3,9 +3,14 @@ import logging
 import time
 from datetime import datetime, timezone, timedelta
 import os
-from typing import Union, Optional, List, Dict, Any
+from typing import Any, Dict, Iterable, List, Optional, Union
 
-from youtube_urls import extract_youtube_video_id
+from youtube_urls import (
+    canonical_youtube_url,
+    default_youtube_thumbnail_url,
+    extract_youtube_video_id,
+    normalize_search_query,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +40,7 @@ class DatabaseManager:
         try:
             conn = sqlite3.connect(self.db_file, timeout=10)
             conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON;")
             # Enable WAL mode for potentially better concurrency, though less critical for simple bots
             # conn.execute("PRAGMA journal_mode=WAL;")
             return conn
@@ -143,11 +149,365 @@ class DatabaseManager:
                         CREATE INDEX IF NOT EXISTS idx_play_history_guild_url ON play_history (guild_id, resolved_url);
                     """)
                     logger.info(f"Database table 'play_history' initialized successfully in {self.db_file}.")
+
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS cached_songs (
+                        youtube_id TEXT PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        resolved_url TEXT NOT NULL,
+                        channel_name TEXT,
+                        duration INTEGER,
+                        thumbnail_url TEXT
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS cached_queries (
+                        normalized_query TEXT PRIMARY KEY,
+                        youtube_id TEXT NOT NULL REFERENCES cached_songs(youtube_id) ON DELETE CASCADE
+                    )
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_cached_queries_youtube_id ON cached_queries (youtube_id);
+                """)
         except sqlite3.Error as e:
             logger.error(f"Database initialization error in {self.db_file}: {e}", exc_info=True)
         finally:
             if conn:
                 conn.close()
+
+    def upsert_cached_song(
+        self,
+        youtube_id: str,
+        title: str,
+        resolved_url: Optional[str] = None,
+        channel_name: Optional[str] = None,
+        duration: Optional[int] = None,
+        thumbnail_url: Optional[str] = None,
+    ) -> bool:
+        """Insert or update cached YouTube song metadata without triggering delete cascades."""
+        if not youtube_id or not title or not str(title).strip():
+            return False
+
+        canonical_url = canonical_youtube_url(youtube_id)
+        conn = self._get_db_connection()
+        if not conn:
+            logger.warning("Failed to get DB connection for upserting cached song %s.", youtube_id)
+            return False
+
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO cached_songs (
+                        youtube_id, title, resolved_url, channel_name, duration, thumbnail_url
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(youtube_id) DO UPDATE SET
+                        title = excluded.title,
+                        resolved_url = excluded.resolved_url,
+                        channel_name = COALESCE(excluded.channel_name, cached_songs.channel_name),
+                        duration = COALESCE(excluded.duration, cached_songs.duration),
+                        thumbnail_url = COALESCE(excluded.thumbnail_url, cached_songs.thumbnail_url)
+                    """,
+                    (
+                        youtube_id,
+                        str(title).strip(),
+                        canonical_url,
+                        channel_name,
+                        duration,
+                        thumbnail_url,
+                    ),
+                )
+            return True
+        except sqlite3.Error as e:
+            logger.error("Failed to upsert cached song %s: %s", youtube_id, e, exc_info=True)
+            return False
+        finally:
+            conn.close()
+
+    def get_cached_song(self, youtube_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch cached YouTube song metadata by video ID."""
+        if not youtube_id:
+            return None
+
+        conn = self._get_db_connection()
+        if not conn:
+            logger.warning("Failed to get DB connection for reading cached song %s.", youtube_id)
+            return None
+
+        try:
+            with conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT youtube_id, title, resolved_url, channel_name, duration, thumbnail_url
+                    FROM cached_songs
+                    WHERE youtube_id = ?
+                    """,
+                    (youtube_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    'youtube_id': row['youtube_id'],
+                    'title': row['title'],
+                    'resolved_url': row['resolved_url'] or canonical_youtube_url(youtube_id),
+                    'channel_name': row['channel_name'],
+                    'duration': row['duration'],
+                    'thumbnail_url': row['thumbnail_url'] or default_youtube_thumbnail_url(youtube_id),
+                }
+        except sqlite3.Error as e:
+            logger.error("Failed to fetch cached song %s: %s", youtube_id, e, exc_info=True)
+            return None
+        finally:
+            conn.close()
+
+    def delete_cached_song(self, youtube_id: str) -> bool:
+        """Delete a cached song entry (cascading any cached_queries referencing it)."""
+        if not youtube_id:
+            return False
+
+        conn = self._get_db_connection()
+        if not conn:
+            logger.warning("Failed to get DB connection for deleting cached song %s.", youtube_id)
+            return False
+
+        try:
+            with conn:
+                cursor = conn.execute(
+                    "DELETE FROM cached_songs WHERE youtube_id = ?",
+                    (youtube_id,),
+                )
+                return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            logger.error("Failed to delete cached song %s: %s", youtube_id, e, exc_info=True)
+            return False
+        finally:
+            conn.close()
+
+    def get_cached_query(self, normalized_query: str) -> Optional[str]:
+        """Look up a cached YouTube ID for an exact normalized search query."""
+        if not normalized_query:
+            return None
+
+        conn = self._get_db_connection()
+        if not conn:
+            logger.warning("Failed to get DB connection for looking up cached query %r.", normalized_query)
+            return None
+
+        try:
+            with conn:
+                cursor = conn.execute(
+                    "SELECT youtube_id FROM cached_queries WHERE normalized_query = ?",
+                    (normalized_query,),
+                )
+                row = cursor.fetchone()
+                return row['youtube_id'] if row else None
+        except sqlite3.Error as e:
+            logger.error("Failed to look up cached query %r: %s", normalized_query, e, exc_info=True)
+            return None
+        finally:
+            conn.close()
+
+    def upsert_cached_query(self, normalized_query: str, youtube_id: str) -> bool:
+        """Map an exact normalized search query to an existing cached_songs entry."""
+        if not normalized_query or not youtube_id:
+            return False
+
+        conn = self._get_db_connection()
+        if not conn:
+            logger.warning("Failed to get DB connection for upserting cached query %r.", normalized_query)
+            return False
+
+        try:
+            with conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT 1 FROM cached_songs WHERE youtube_id = ?",
+                    (youtube_id,),
+                )
+                if cursor.fetchone() is None:
+                    return False
+
+                cursor.execute(
+                    """
+                    INSERT INTO cached_queries (normalized_query, youtube_id)
+                    VALUES (?, ?)
+                    ON CONFLICT(normalized_query) DO UPDATE SET
+                        youtube_id = excluded.youtube_id
+                    """,
+                    (normalized_query, youtube_id),
+                )
+            return True
+        except sqlite3.Error as e:
+            logger.error(
+                "Failed to upsert cached query %r -> %s: %s",
+                normalized_query,
+                youtube_id,
+                e,
+                exc_info=True,
+            )
+            return False
+        finally:
+            conn.close()
+
+    def delete_cached_query(self, normalized_query: str) -> bool:
+        """Delete a cached query mapping without removing the underlying cached song."""
+        if not normalized_query:
+            return False
+
+        conn = self._get_db_connection()
+        if not conn:
+            logger.warning("Failed to get DB connection for deleting cached query %r.", normalized_query)
+            return False
+
+        try:
+            with conn:
+                cursor = conn.execute(
+                    "DELETE FROM cached_queries WHERE normalized_query = ?",
+                    (normalized_query,),
+                )
+                return cursor.rowcount > 0
+        except sqlite3.Error as e:
+            logger.error("Failed to delete cached query %r: %s", normalized_query, e, exc_info=True)
+            return False
+        finally:
+            conn.close()
+
+    def reconcile_cache(self, cached_youtube_ids: Iterable[str]) -> Dict[str, int]:
+        """
+        Reconcile cached_songs and cached_queries against YouTube IDs present on disk.
+
+        1. Prune cached_songs rows missing from disk (cascading to cached_queries).
+        2. Backfill missing cached_songs rows from the most recent usable play_history row.
+        3. Backfill cached_queries from completed non-URL play_history rows whose song is cached.
+        """
+        disk_ids = {youtube_id for youtube_id in cached_youtube_ids if youtube_id}
+        summary = {
+            'pruned_songs': 0,
+            'backfilled_songs': 0,
+            'backfilled_queries': 0,
+        }
+
+        conn = self._get_db_connection()
+        if not conn:
+            logger.error("Failed to get DB connection for cache reconciliation.")
+            return summary
+
+        try:
+            with conn:
+                cursor = conn.cursor()
+
+                # 1. Prune stale rows no longer present on disk.
+                cursor.execute("SELECT youtube_id FROM cached_songs")
+                existing_ids = {row['youtube_id'] for row in cursor.fetchall()}
+                stale_ids = existing_ids - disk_ids
+                if stale_ids:
+                    cursor.executemany(
+                        "DELETE FROM cached_songs WHERE youtube_id = ?",
+                        [(youtube_id,) for youtube_id in stale_ids],
+                    )
+                    summary['pruned_songs'] = len(stale_ids)
+
+                surviving_ids = existing_ids - stale_ids
+
+                # 2. Backfill missing cached_songs from most recent usable play_history row.
+                missing_ids = disk_ids - surviving_ids
+                songs_to_insert = []
+                if missing_ids:
+                    cursor.execute(
+                        """
+                        SELECT resolved_url, resolved_title, channel_name, duration
+                        FROM play_history
+                        WHERE resolved_url IS NOT NULL
+                        ORDER BY request_timestamp DESC, request_id DESC
+                        """
+                    )
+                    found_ids = set()
+                    for row in cursor.fetchall():
+                        youtube_id = extract_youtube_video_id(row['resolved_url'])
+                        if not youtube_id or youtube_id not in missing_ids or youtube_id in found_ids:
+                            continue
+                        title = (row['resolved_title'] or "").strip()
+                        duration = row['duration']
+                        if not title or duration is None:
+                            continue
+                        found_ids.add(youtube_id)
+                        songs_to_insert.append(
+                            (
+                                youtube_id,
+                                title,
+                                canonical_youtube_url(youtube_id),
+                                row['channel_name'],
+                                duration,
+                                default_youtube_thumbnail_url(youtube_id),
+                            )
+                        )
+                        if len(found_ids) == len(missing_ids):
+                            break
+
+                    if songs_to_insert:
+                        cursor.executemany(
+                            """
+                            INSERT OR IGNORE INTO cached_songs (
+                                youtube_id, title, resolved_url, channel_name, duration, thumbnail_url
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            """,
+                            songs_to_insert,
+                        )
+                        summary['backfilled_songs'] = len(songs_to_insert)
+
+                valid_cached_song_ids = surviving_ids | {row[0] for row in songs_to_insert}
+
+                # 3. Backfill cached_queries from completed non-URL plays of cached songs (latest wins).
+                if valid_cached_song_ids:
+                    cursor.execute(
+                        """
+                        SELECT query, resolved_url
+                        FROM play_history
+                        WHERE play_status = 'completed'
+                          AND resolved_url IS NOT NULL
+                          AND query IS NOT NULL
+                        ORDER BY request_timestamp DESC, request_id DESC
+                        """
+                    )
+                    seen_queries = set()
+                    queries_to_insert = []
+                    for row in cursor.fetchall():
+                        youtube_id = extract_youtube_video_id(row['resolved_url'])
+                        if not youtube_id or youtube_id not in valid_cached_song_ids:
+                            continue
+                        normalized_query = normalize_search_query(row['query'])
+                        if not normalized_query or normalized_query in seen_queries:
+                            continue
+                        seen_queries.add(normalized_query)
+                        queries_to_insert.append((normalized_query, youtube_id))
+
+                    if queries_to_insert:
+                        before_changes = conn.total_changes
+                        cursor.executemany(
+                            """
+                            INSERT OR IGNORE INTO cached_queries (normalized_query, youtube_id)
+                            VALUES (?, ?)
+                            """,
+                            queries_to_insert,
+                        )
+                        summary['backfilled_queries'] = conn.total_changes - before_changes
+
+            logger.info(
+                "Cache DB reconcile complete: pruned %d stale song(s), backfilled %d song(s) and %d query mapping(s).",
+                summary['pruned_songs'],
+                summary['backfilled_songs'],
+                summary['backfilled_queries'],
+            )
+        except sqlite3.Error as e:
+            logger.error("Failed to reconcile cache tables in %s: %s", self.db_file, e, exc_info=True)
+        finally:
+            conn.close()
+
+        return summary
 
     def log_song_request(self, user_id: int, user_name: str, guild_id: int, query: str, resolved_title: str, resolved_url: Optional[str], channel_name: Optional[str], duration: int) -> Optional[int]:
         """
@@ -670,14 +1030,45 @@ class DatabaseManager:
                 stats['all_time'] = cursor.fetchone()[0]
 
                 cursor.execute("""
-                    SELECT resolved_title, COUNT(*) as request_count
-                    FROM play_history
-                    WHERE user_id = ? AND guild_id = ? AND play_status = 'completed'
-                    GROUP BY resolved_title
-                    ORDER BY request_count DESC
+                    WITH completed_plays AS (
+                        SELECT
+                            request_id,
+                            request_timestamp,
+                            resolved_title,
+                            resolved_url,
+                            CASE
+                                WHEN resolved_url IS NOT NULL THEN 'url:' || resolved_url
+                                ELSE 'title:' || COALESCE(resolved_title, '')
+                            END AS song_key
+                        FROM play_history
+                        WHERE user_id = ? AND guild_id = ? AND play_status = 'completed'
+                    ),
+                    song_metadata AS (
+                        SELECT *,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY song_key
+                                ORDER BY request_timestamp DESC, request_id DESC
+                            ) AS metadata_rank
+                        FROM completed_plays
+                    ),
+                    song_totals AS (
+                        SELECT song_key, COUNT(*) AS request_count, MIN(request_timestamp) AS first_play
+                        FROM completed_plays
+                        GROUP BY song_key
+                    )
+                    SELECT
+                        sm.resolved_title,
+                        st.request_count
+                    FROM song_totals AS st
+                    JOIN song_metadata AS sm
+                      ON sm.song_key = st.song_key AND sm.metadata_rank = 1
+                    ORDER BY st.request_count DESC, st.first_play ASC, sm.resolved_title COLLATE NOCASE ASC
                     LIMIT 5
                 """, (user_id, guild_id))
-                stats['top_5_requests'] = [{'title': row['resolved_title'], 'count': row['request_count']} for row in cursor.fetchall()]
+                stats['top_5_requests'] = [
+                    {'title': row['resolved_title'] or "Unknown title", 'count': row['request_count']}
+                    for row in cursor.fetchall()
+                ]
 
                 cursor.execute("SELECT DISTINCT date(request_timestamp) FROM play_history WHERE user_id = ? AND guild_id = ? AND play_status = 'completed' ORDER BY date(request_timestamp)", (user_id, guild_id))
                 request_dates = [datetime.strptime(row[0], '%Y-%m-%d').date() for row in cursor.fetchall()]

@@ -2,13 +2,15 @@ import logging
 import os
 from pathlib import Path
 
+from youtube_urls import VALID_CACHE_EXTENSIONS, youtube_id_from_cache_path
+
 logger = logging.getLogger(__name__)
 
 
 class SongCache:
     """Indexes and manages downloaded song files."""
 
-    VALID_EXTENSIONS = ('.opus', '.m4a', '.webm', '.mp3', '.aac', '.wav')
+    VALID_EXTENSIONS = VALID_CACHE_EXTENSIONS
 
     def __init__(
         self,
@@ -141,9 +143,16 @@ class SongCache:
         """Refresh capacity logs after files have been removed externally."""
         self._check_capacity()
 
-    def clear(self):
-        self._songs.clear()
-        self._check_capacity()
+    def youtube_ids_on_disk(self) -> set[str]:
+        """Return YouTube video IDs for cached files currently present on disk."""
+        youtube_ids = set()
+        for file_path in self._songs.values():
+            if not os.path.exists(file_path):
+                continue
+            youtube_id = youtube_id_from_cache_path(file_path)
+            if youtube_id:
+                youtube_ids.add(youtube_id)
+        return youtube_ids
 
     def load(self):
         """Load existing song cache from the cache directory."""

@@ -9,6 +9,13 @@ import yt_dlp
 
 from config import FFMPEG_EXECUTABLE, MAX_SONG_DURATION_SECONDS, SONG_CACHE_DIR
 from youtube import FFMPEG_OPTIONS, is_age_restricted_yt_dlp_error, is_livestream_info, run_yt_dlp_extractor, run_yt_dlp_search, run_yt_dlp_search_results
+from youtube_urls import (
+    canonical_youtube_url,
+    default_youtube_thumbnail_url,
+    extract_youtube_video_id,
+    normalize_search_query,
+    youtube_id_from_cache_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +47,7 @@ class PlaybackMixin:
     def _process_pending_cache_evictions(self):
         """Delete rejected new downloads once no playback entry references them."""
         pending = getattr(self, 'pending_cache_evictions', {})
+        db_manager = getattr(self, 'db_manager', None)
         results = {}
         for youtube_id, eviction in list(pending.items()):
             file_path = eviction['file_path']
@@ -49,11 +57,15 @@ class PlaybackMixin:
 
             if not self.song_cache.get(youtube_id):
                 pending.pop(youtube_id, None)
+                if db_manager and hasattr(db_manager, 'delete_cached_song'):
+                    db_manager.delete_cached_song(youtube_id)
                 results[youtube_id] = 'deleted'
                 continue
 
             if self.song_cache.remove(youtube_id, expected_file_path=file_path):
                 pending.pop(youtube_id, None)
+                if db_manager and hasattr(db_manager, 'delete_cached_song'):
+                    db_manager.delete_cached_song(youtube_id)
                 results[youtube_id] = 'deleted'
                 logger.info(
                     "Deleted rejected new cache download for '%s' (%s).",
@@ -63,6 +75,114 @@ class PlaybackMixin:
             else:
                 results[youtube_id] = 'failed'
         return results
+
+    @staticmethod
+    def _is_valid_cached_file(file_path):
+        if not file_path:
+            return False
+        try:
+            return os.path.exists(file_path) and os.path.getsize(file_path) > 0
+        except OSError:
+            return False
+
+    def _cleanup_stale_cache_entry(self, youtube_id):
+        song_cache = getattr(self, 'song_cache', None)
+        db_manager = getattr(self, 'db_manager', None)
+        if song_cache and song_cache.get(youtube_id):
+            song_cache.remove(youtube_id)
+        if db_manager and hasattr(db_manager, 'delete_cached_song'):
+            db_manager.delete_cached_song(youtube_id)
+
+    def _upsert_cached_song_metadata(self, file_path, title, channel_name, duration, thumbnail_url):
+        db_manager = getattr(self, 'db_manager', None)
+        if not db_manager or not hasattr(db_manager, 'upsert_cached_song'):
+            return
+        cached_youtube_id = youtube_id_from_cache_path(file_path)
+        if not cached_youtube_id:
+            return
+        if not title or duration is None:
+            return
+        db_manager.upsert_cached_song(
+            youtube_id=cached_youtube_id,
+            title=title,
+            resolved_url=canonical_youtube_url(cached_youtube_id),
+            channel_name=channel_name,
+            duration=duration,
+            thumbnail_url=thumbnail_url,
+        )
+
+    def _record_completed_query_cache(self, song_info):
+        """Record normalized search query -> YouTube ID mapping for completed cached tracks."""
+        if not song_info or not song_info.get('is_cached', False):
+            return
+        youtube_id = song_info.get('youtube_id')
+        search_query = song_info.get('search_query_normalized') or song_info.get('source_query_normalized')
+        if not youtube_id or not search_query:
+            return
+        db_manager = getattr(self, 'db_manager', None)
+        if db_manager and hasattr(db_manager, 'upsert_cached_query'):
+            db_manager.upsert_cached_query(search_query, youtube_id)
+
+    def _try_cache_first_extract(self, query, normalized_query):
+        """Return song_info directly from disk + SQLite cache without calling yt-dlp, or None."""
+        song_cache = getattr(self, 'song_cache', None)
+        db_manager = getattr(self, 'db_manager', None)
+        if not song_cache or not db_manager:
+            return None
+
+        candidate_youtube_id = extract_youtube_video_id(query)
+        matched_cached_query = None
+        if not candidate_youtube_id and normalized_query and hasattr(db_manager, 'get_cached_query'):
+            candidate_youtube_id = db_manager.get_cached_query(normalized_query)
+            if candidate_youtube_id:
+                matched_cached_query = normalized_query
+
+        if not candidate_youtube_id:
+            return None
+
+        cached_file = song_cache.get(candidate_youtube_id)
+        if not self._is_valid_cached_file(cached_file):
+            if cached_file or matched_cached_query:
+                logger.info(
+                    "Cleaning up stale cache entry for YouTube ID %s (missing or empty file on disk).",
+                    candidate_youtube_id,
+                )
+                self._cleanup_stale_cache_entry(candidate_youtube_id)
+            return None
+
+        if not hasattr(db_manager, 'get_cached_song'):
+            return None
+
+        cached_song = db_manager.get_cached_song(candidate_youtube_id)
+        if not cached_song or not cached_song.get('title') or cached_song.get('duration') is None:
+            return None
+
+        duration = cached_song['duration']
+        logger.info(
+            "Cache-first fast-path hit for %r (youtube_id=%s, query_hit=%s): %s",
+            query,
+            candidate_youtube_id,
+            bool(matched_cached_query),
+            cached_file,
+        )
+        return {
+            'title': cached_song['title'],
+            'url': cached_file,
+            'thumbnail': cached_song.get('thumbnail_url') or default_youtube_thumbnail_url(candidate_youtube_id),
+            'duration': duration,
+            'webpage_url': cached_song.get('resolved_url') or canonical_youtube_url(candidate_youtube_id),
+            'channel': cached_song.get('channel_name') or 'Unknown Channel',
+            'youtube_id': candidate_youtube_id,
+            'start_time': None,
+            'is_cached': True,
+            'was_previously_cached': True,
+            'created_cache_entry': False,
+            'exceeds_cache_duration': bool(duration and duration > MAX_SONG_DURATION_SECONDS),
+            'estimated_size_bytes': 0,
+            'matched_cached_query': matched_cached_query,
+            'search_query_normalized': normalized_query,
+            'source_query_normalized': normalized_query,
+        }
 
     def _request_cache_eviction(self, song_info):
         """Request eviction when this playback request created its cache entry."""
@@ -107,10 +227,15 @@ class PlaybackMixin:
             return []
 
     async def _extract_info(self, query, download=False):
-        """Extracts info using yt-dlp in an executor to avoid blocking."""
+        """Extracts info using local cache first, falling back to yt-dlp in an executor."""
         if getattr(self, 'is_shutting_down', False):
             logger.info("Skipping info extraction because shutdown is in progress.")
             return None
+
+        normalized_query = normalize_search_query(query)
+        fast_path_info = self._try_cache_first_extract(query, normalized_query)
+        if fast_path_info is not None:
+            return fast_path_info
 
         loop = asyncio.get_event_loop()
         try:
@@ -165,16 +290,34 @@ class PlaybackMixin:
             exceeds_cache_duration = bool(duration and duration > MAX_SONG_DURATION_SECONDS)
             estimated_size_bytes = data.get('filesize') or data.get('filesize_approx') or 0
 
-            cached_file = self.song_cache.get(youtube_id)
-            if cached_file and os.path.exists(cached_file):
+            cached_file = self.song_cache.get(youtube_id) if getattr(self, 'song_cache', None) else None
+            if cached_file and not self._is_valid_cached_file(cached_file):
+                logger.info(
+                    "Cleaning up stale cache entry for YouTube ID %s after yt-dlp lookup (missing or empty file).",
+                    youtube_id,
+                )
+                self._cleanup_stale_cache_entry(youtube_id)
+                cached_file = None
+
+            if cached_file:
                 logger.info(f"Using cached file for '{query}': {cached_file}")
+                title = data.get('title', 'Unknown Title')
+                channel = data.get('channel', 'Unknown Channel')
+                thumbnail = data.get('thumbnail')
+                self._upsert_cached_song_metadata(
+                    file_path=cached_file,
+                    title=data.get('title'),
+                    channel_name=data.get('channel'),
+                    duration=duration,
+                    thumbnail_url=thumbnail,
+                )
                 song_info = {
-                    'title': data.get('title', 'Unknown Title'),
+                    'title': title,
                     'url': cached_file,
-                    'thumbnail': data.get('thumbnail'),
-                    'duration': data.get('duration'),
+                    'thumbnail': thumbnail,
+                    'duration': duration,
                     'webpage_url': data.get('webpage_url', query),
-                    'channel': data.get('channel', 'Unknown Channel'),
+                    'channel': channel,
                     'youtube_id': youtube_id,
                     'start_time': None,
                     'is_cached': True,
@@ -182,6 +325,9 @@ class PlaybackMixin:
                     'created_cache_entry': False,
                     'exceeds_cache_duration': exceeds_cache_duration,
                     'estimated_size_bytes': estimated_size_bytes,
+                    'matched_cached_query': None,
+                    'search_query_normalized': normalized_query,
+                    'source_query_normalized': normalized_query,
                 }
                 return song_info
 
@@ -303,14 +449,28 @@ class PlaybackMixin:
                             'estimated_size_bytes': estimated_size_bytes,
                         }
                     logger.info(f"Successfully downloaded and cached '{query}' at {found_file}")
-                    
+
+                    resolved_title = data.get('title') or actual_video_data.get('title') or downloaded_data.get('title')
+                    resolved_thumbnail = data.get('thumbnail') or actual_video_data.get('thumbnail') or downloaded_data.get('thumbnail')
+                    resolved_duration = data.get('duration') if data.get('duration') is not None else (
+                        actual_video_data.get('duration') if actual_video_data.get('duration') is not None else downloaded_data.get('duration')
+                    )
+                    resolved_channel = data.get('channel') or actual_video_data.get('channel') or downloaded_data.get('channel')
+                    self._upsert_cached_song_metadata(
+                        file_path=found_file,
+                        title=resolved_title,
+                        channel_name=resolved_channel,
+                        duration=resolved_duration,
+                        thumbnail_url=resolved_thumbnail,
+                    )
+
                     song_info = {
-                        'title': data.get('title') or downloaded_data.get('title', 'Unknown Title'),
+                        'title': resolved_title or 'Unknown Title',
                         'url': found_file,
-                        'thumbnail': data.get('thumbnail') or downloaded_data.get('thumbnail'),
-                        'duration': data.get('duration') or downloaded_data.get('duration'),
-                        'webpage_url': data.get('webpage_url') or downloaded_data.get('webpage_url', query),
-                        'channel': data.get('channel') or downloaded_data.get('channel', 'Unknown Channel'),
+                        'thumbnail': resolved_thumbnail,
+                        'duration': resolved_duration,
+                        'webpage_url': data.get('webpage_url') or actual_video_data.get('webpage_url') or downloaded_data.get('webpage_url', query),
+                        'channel': resolved_channel or 'Unknown Channel',
                         'youtube_id': youtube_id,
                         'start_time': None,
                         'is_cached': True,
@@ -318,6 +478,9 @@ class PlaybackMixin:
                         'created_cache_entry': True,
                         'exceeds_cache_duration': False,
                         'estimated_size_bytes': estimated_size_bytes,
+                        'matched_cached_query': None,
+                        'search_query_normalized': normalized_query,
+                        'source_query_normalized': normalized_query,
                     }
                     return song_info
                 else:
@@ -338,6 +501,9 @@ class PlaybackMixin:
                     'created_cache_entry': False,
                     'exceeds_cache_duration': exceeds_cache_duration,
                     'estimated_size_bytes': estimated_size_bytes,
+                    'matched_cached_query': None,
+                    'search_query_normalized': normalized_query,
+                    'source_query_normalized': normalized_query,
                 }
 
         except Exception as e:
@@ -371,9 +537,11 @@ class PlaybackMixin:
         was_skipped = self.current_song.get(guild_id, {}).get('was_skipped', False)
 
         if not was_skipped and self.current_song.get(guild_id):
-            request_id = self.current_song[guild_id].get('request_id')
+            finished_song = self.current_song[guild_id]
+            request_id = finished_song.get('request_id')
             if request_id:
                 self.db_manager.update_play_status(request_id, 'completed')
+            self._record_completed_query_cache(finished_song)
 
         queue = self.get_queue(guild_id)
         if not queue:
