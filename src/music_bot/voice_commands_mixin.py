@@ -128,6 +128,17 @@ class VoiceCommandsMixin:
     @commands.command(name='play', help='Plays a song from YouTube or SoundCloud (URL or search query).')
     async def play(self, ctx: commands.Context, *, query: str):
         """Plays audio from a YouTube or SoundCloud URL, or searches YouTube for a query."""
+        await self._play_query(ctx, query)
+
+    async def _play_query(
+        self,
+        ctx: commands.Context,
+        query: str,
+        *,
+        search_query_override: str | None = None,
+        cache_query_only_if_missing: bool = False,
+    ):
+        """Internal handler for playing a URL or search query."""
         logger.info(f"'play' command invoked by '{ctx.author}' in guild '{ctx.guild.name}' ({ctx.guild.id}) with query: {query}")
         guild_id = ctx.guild.id
         self.last_activity[guild_id] = time.time()
@@ -196,7 +207,11 @@ class VoiceCommandsMixin:
         queue = self.get_queue(guild_id)
 
         query_stripped = query.strip()
-        search_query_normalized = normalize_search_query(query_stripped)
+        search_query_normalized = (
+            search_query_override
+            if search_query_override is not None
+            else normalize_search_query(query_stripped)
+        )
         is_url = query_stripped.startswith("http://") or query_stripped.startswith("https://")
         is_soundcloud = is_url and "soundcloud.com" in query_stripped.lower()
 
@@ -262,6 +277,8 @@ class VoiceCommandsMixin:
         if search_query_normalized:
             song_info['search_query_normalized'] = search_query_normalized
             song_info['source_query_normalized'] = search_query_normalized
+            if cache_query_only_if_missing:
+                song_info['cache_query_only_if_missing'] = True
 
         try:
             request_id = self.db_manager.log_song_request(
@@ -432,13 +449,12 @@ class VoiceCommandsMixin:
         selected_title = discord.utils.escape_markdown(selected_entry.get('title', 'Unknown Title'))
         await processing_message.edit(content=f"Selected **{selected_title}**.", embed=None)
 
-        play_command = self.bot.get_command('play')
-        if not play_command:
-            await ctx.send("The play command is not available.")
-            logger.error("Could not invoke play command from search: play command not found.")
-            return
-
-        await ctx.invoke(play_command, query=selected_url)
+        await self._play_query(
+            ctx,
+            selected_url,
+            search_query_override=normalize_search_query(query_stripped),
+            cache_query_only_if_missing=True,
+        )
 
     @commands.command(name='skip', help='Skips the currently playing song.')
     async def skip(self, ctx: commands.Context):
@@ -492,7 +508,10 @@ class VoiceCommandsMixin:
                 search_query = current.get('search_query_normalized') or current.get('source_query_normalized')
                 upsert_cached_query = getattr(self.db_manager, 'upsert_cached_query', None)
                 if youtube_id and search_query and upsert_cached_query:
-                    upsert_cached_query(search_query, youtube_id)
+                    if current.get('cache_query_only_if_missing', False):
+                        upsert_cached_query(search_query, youtube_id, overwrite=False)
+                    else:
+                        upsert_cached_query(search_query, youtube_id)
 
         logger.info(f"Skipping song in guild {guild_id} by command: {current['title']}")
         skipped_early = elapsed_time <= EARLY_SKIP_CACHE_EVICTION_SECONDS

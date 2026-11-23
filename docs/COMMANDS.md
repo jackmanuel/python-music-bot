@@ -31,5 +31,7 @@ The bot uses `!` as its command prefix.
 
 *   `!cache`: Shows the number of cached songs, approximate cache size, and active cache mode.
 *   `!cacheleaderboard` or `!cachelb`: Ranks users by the total size of YouTube cache files credited to their earliest requests in the current server. Cache files without matching server history are skipped.
+*   `!setquery <query> <YouTube URL>`: Maps a search query to a YouTube video, caching it if needed.
+*   `!delquery <query>`: Removes a saved search query mapping.
 
-New cache downloads are also removed automatically when their song is skipped within the first 30 seconds of playback. Previously cached songs are not affected.
+New cache downloads are removed automatically when skipped within the first 30 seconds of playback (previously cached songs are not affected). Skipping a cached search hit within the first 10 seconds clears its saved query mapping without deleting the audio file.

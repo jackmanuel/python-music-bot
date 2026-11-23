@@ -121,7 +121,10 @@ class PlaybackMixin:
             return
         db_manager = getattr(self, 'db_manager', None)
         if db_manager and hasattr(db_manager, 'upsert_cached_query'):
-            db_manager.upsert_cached_query(search_query, youtube_id)
+            if song_info.get('cache_query_only_if_missing', False):
+                db_manager.upsert_cached_query(search_query, youtube_id, overwrite=False)
+            else:
+                db_manager.upsert_cached_query(search_query, youtube_id)
 
     def _try_cache_first_extract(self, query, normalized_query):
         """Return song_info directly from disk + SQLite cache without calling yt-dlp, or None."""

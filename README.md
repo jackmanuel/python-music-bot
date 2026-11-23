@@ -8,7 +8,7 @@ I built this for my own Discord server, and I am open sourcing it mainly as a pr
 
 *   Plays YouTube audio from search terms, selected search results, or direct URLs.
 *   Supports SoundCloud URLs through the same `yt-dlp` backend.
-*   Caches downloaded songs locally by default so repeated plays can start faster and avoid duplicate downloads.
+*   Caches downloaded songs and search results locally by default so repeated plays start immediately without duplicate downloads or YouTube lookups.
 *   Can run in a no-cache-download mode that reuses existing cached songs and streams uncached songs.
 *   Tracks every song request in a local SQLite database, including the requester, server, resolved title, URL, duration, and play status.
 *   Uses that play history for stats commands, leaderboards, an animated leaderboard race, and cumulative play graphs.

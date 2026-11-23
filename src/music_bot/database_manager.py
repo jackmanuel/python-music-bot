@@ -310,7 +310,12 @@ class DatabaseManager:
         finally:
             conn.close()
 
-    def upsert_cached_query(self, normalized_query: str, youtube_id: str) -> bool:
+    def upsert_cached_query(
+        self,
+        normalized_query: str,
+        youtube_id: str,
+        overwrite: bool = True,
+    ) -> bool:
         """Map an exact normalized search query to an existing cached_songs entry."""
         if not normalized_query or not youtube_id:
             return False
@@ -330,16 +335,26 @@ class DatabaseManager:
                 if cursor.fetchone() is None:
                     return False
 
+                if overwrite:
+                    cursor.execute(
+                        """
+                        INSERT INTO cached_queries (normalized_query, youtube_id)
+                        VALUES (?, ?)
+                        ON CONFLICT(normalized_query) DO UPDATE SET
+                            youtube_id = excluded.youtube_id
+                        """,
+                        (normalized_query, youtube_id),
+                    )
+                    return True
+
                 cursor.execute(
                     """
-                    INSERT INTO cached_queries (normalized_query, youtube_id)
+                    INSERT OR IGNORE INTO cached_queries (normalized_query, youtube_id)
                     VALUES (?, ?)
-                    ON CONFLICT(normalized_query) DO UPDATE SET
-                        youtube_id = excluded.youtube_id
                     """,
                     (normalized_query, youtube_id),
                 )
-            return True
+                return cursor.rowcount > 0
         except sqlite3.Error as e:
             logger.error(
                 "Failed to upsert cached query %r -> %s: %s",

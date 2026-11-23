@@ -886,10 +886,286 @@ class ClearCacheRemovalTests(unittest.TestCase):
     def test_clearcache_command_is_not_registered(self):
         self.assertFalse(hasattr(CacheCommandsMixin, "clear_cache"))
         self.assertFalse(hasattr(MusicCog, "clear_cache"))
-        cog_command_names = {cmd.name for cmd in MusicCog.__cog_commands__}
-        self.assertNotIn("clearcache", cog_command_names)
-        self.assertIn("cache", cog_command_names)
-        self.assertIn("cacheleaderboard", cog_command_names)
+        cog_commands = {cmd.name: cmd for cmd in MusicCog.__cog_commands__}
+        self.assertNotIn("clearcache", cog_commands)
+        self.assertIn("cache", cog_commands)
+        self.assertIn("cacheleaderboard", cog_commands)
+        self.assertIn("setquery", cog_commands)
+        self.assertIn("delquery", cog_commands)
+        # Neither setquery nor delquery should be permission-guarded.
+        self.assertEqual(cog_commands["setquery"].checks, [])
+        self.assertEqual(cog_commands["delquery"].checks, [])
+
+
+class SearchCachingAndQueryCommandTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        self.cache_dir = self.root / "song_cache"
+        self.cache_dir.mkdir()
+        self.db_path = self.root / "music_log.db"
+        self.db_manager = DatabaseManager(str(self.db_path))
+        self.song_cache = SongCache(self.cache_dir)
+
+        class Harness(PlaybackMixin, VoiceCommandsMixin, CacheCommandsMixin):
+            pass
+
+        self.cog = Harness()
+        self.cog.db_manager = self.db_manager
+        self.cog.song_cache = self.song_cache
+        self.cog.cache_downloads_enabled = True
+        self.cog.queues = {}
+        self.cog.current_song = {}
+        self.cog.voice_clients = {}
+        self.cog.last_activity = {}
+        self.cog.pending_cache_evictions = {}
+        self.cog.get_queue = lambda guild_id: self.cog.queues.setdefault(guild_id, deque())
+        self.cog._format_duration = lambda s: "03:00"
+        self.cog.process_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.cog.thread_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    async def asyncTearDown(self):
+        self.cog.process_executor.shutdown(wait=True)
+        self.cog.thread_executor.shutdown(wait=True)
+        self.temp_dir.cleanup()
+
+    def _seed_cached_song(self, youtube_id, title="Seeded Song", duration=180):
+        file_path = self.cache_dir / f"youtube-{youtube_id}.opus"
+        file_path.write_bytes(b"opus-bytes")
+        self.song_cache.add(youtube_id, str(file_path))
+        self.db_manager.upsert_cached_song(
+            youtube_id=youtube_id,
+            title=title,
+            channel_name="Channel",
+            duration=duration,
+        )
+        return file_path
+
+    def _make_ctx(self, voice_channel=None):
+        ctx = MagicMock()
+        ctx.author = MagicMock()
+        ctx.author.id = 42
+        ctx.author.__str__ = lambda _self: "Alice"
+        ctx.author.voice = MagicMock(channel=voice_channel) if voice_channel else None
+        ctx.guild = MagicMock()
+        ctx.guild.id = 10
+        ctx.guild.name = "Test Server"
+        ctx.guild.voice_client = None
+        sent_messages = []
+
+        async def fake_send(content=None, *, embed=None):
+            msg = MagicMock()
+            msg.id = len(sent_messages) + 1
+            msg.content = content
+            msg.embed = embed
+            msg.edits = []
+            msg.reactions_added = []
+
+            async def fake_edit(content=None, embed=None):
+                msg.content = content
+                msg.embed = embed
+                msg.edits.append(content)
+
+            async def fake_add_reaction(emoji):
+                msg.reactions_added.append(emoji)
+
+            msg.edit = fake_edit
+            msg.add_reaction = fake_add_reaction
+            sent_messages.append(msg)
+            return msg
+
+        ctx.send = fake_send
+        ctx.sent_messages = sent_messages
+        return ctx
+
+    def test_upsert_cached_query_overwrite_false_does_not_replace_existing(self):
+        self._seed_cached_song("firstVid111", "First")
+        self._seed_cached_song("secondVid22", "Second")
+
+        self.assertTrue(
+            self.db_manager.upsert_cached_query("my query", "firstVid111", overwrite=False)
+        )
+        self.assertEqual(self.db_manager.get_cached_query("my query"), "firstVid111")
+
+        self.assertFalse(
+            self.db_manager.upsert_cached_query("my query", "secondVid22", overwrite=False)
+        )
+        self.assertEqual(self.db_manager.get_cached_query("my query"), "firstVid111")
+
+        self.assertTrue(
+            self.db_manager.upsert_cached_query("my query", "secondVid22", overwrite=True)
+        )
+        self.assertEqual(self.db_manager.get_cached_query("my query"), "secondVid22")
+
+    async def test_search_selection_caches_query_on_completion_only_if_missing(self):
+        self._seed_cached_song("lyricVid111", "Lyric Version")
+        self._seed_cached_song("liveVid2222", "Live Version")
+
+        vc = MagicMock()
+        vc.channel = object()
+        vc.is_connected.return_value = True
+        vc.is_playing.return_value = False
+        vc.is_paused.return_value = False
+        self.cog.voice_clients = {10: vc}
+
+        async def run_search_pick(query_text, picked_id, picked_title):
+            ctx = self._make_ctx(voice_channel=vc.channel)
+            self.cog._search_results = AsyncMock(
+                return_value=[
+                    {
+                        "id": picked_id,
+                        "title": picked_title,
+                        "channel": "Channel",
+                        "duration": 180,
+                        "webpage_url": canonical_youtube_url(picked_id),
+                    }
+                ]
+            )
+            reaction = MagicMock()
+            reaction.emoji = "1️⃣"
+            self.cog.bot = MagicMock()
+            self.cog.bot.wait_for = AsyncMock(return_value=(reaction, ctx.author))
+
+            with patch(
+                "voice_commands_mixin.discord.FFmpegOpusAudio.from_probe",
+                new=AsyncMock(return_value=object()),
+            ):
+                await VoiceCommandsMixin.search.callback(self.cog, ctx, query=query_text)
+
+        # 1. Query not mapped yet -> !search picks lyricVid111 -> completes -> gets cached!
+        await run_search_pick("  Age Restricted Song  ", "lyricVid111", "Lyric Version")
+        self.assertIsNone(self.db_manager.get_cached_query("age restricted song"))
+        self.cog._play_next(10)
+        self.assertEqual(self.db_manager.get_cached_query("age restricted song"), "lyricVid111")
+
+        # 2. Query ALREADY mapped -> !search picks liveVid2222 -> completes -> must NOT overwrite!
+        await run_search_pick("age restricted song", "liveVid2222", "Live Version")
+        self.cog._play_next(10)
+        self.assertEqual(self.db_manager.get_cached_query("age restricted song"), "lyricVid111")
+
+    async def test_setquery_fast_path_for_already_cached_video_and_overwrites(self):
+        self._seed_cached_song("oldVideo111", "Old Song")
+        self._seed_cached_song("newVideo222", "New Song")
+        self.db_manager.upsert_cached_query("party anthem", "oldVideo111")
+
+        ctx = self._make_ctx()
+        with patch("playback_mixin.run_yt_dlp_search") as mock_search:
+            await CacheCommandsMixin.set_query.callback(
+                self.cog,
+                ctx,
+                raw_args="  Party   Anthem  https://youtu.be/newVideo222",
+            )
+
+        mock_search.assert_not_called()
+        self.assertEqual(self.db_manager.get_cached_query("party anthem"), "newVideo222")
+        self.assertIn("Mapped `party anthem`", ctx.sent_messages[-1].content)
+        self.assertIn("New Song", ctx.sent_messages[-1].content)
+
+    async def test_setquery_downloads_and_caches_uncached_video_on_the_spot(self):
+        search_data = {
+            "id": "freshVid123",
+            "title": "Fresh Track",
+            "url": "https://example.com/stream",
+            "webpage_url": canonical_youtube_url("freshVid123"),
+            "channel": "Fresh Channel",
+            "duration": 195,
+            "thumbnail": "https://i.ytimg.com/vi/freshVid123/hqdefault.jpg",
+        }
+
+        def fake_download(_query, _download):
+            (self.cache_dir / "youtube-freshVid123.opus").write_bytes(b"fresh-audio")
+            return {
+                "id": "freshVid123",
+                "title": "Fresh Track",
+                "ext": "opus",
+                "extractor": "youtube",
+            }
+
+        ctx = self._make_ctx()
+        with (
+            patch("playback_mixin.SONG_CACHE_DIR", self.cache_dir),
+            patch("playback_mixin.run_yt_dlp_search", return_value=search_data),
+            patch("playback_mixin.run_yt_dlp_extractor", side_effect=fake_download),
+        ):
+            await CacheCommandsMixin.set_query.callback(
+                self.cog,
+                ctx,
+                raw_args="fresh track query https://www.youtube.com/watch?v=freshVid123",
+            )
+
+        self.assertTrue((self.cache_dir / "youtube-freshVid123.opus").exists())
+        self.assertIsNotNone(self.db_manager.get_cached_song("freshVid123"))
+        self.assertEqual(self.db_manager.get_cached_query("fresh track query"), "freshVid123")
+        self.assertIn("downloaded and cached", ctx.sent_messages[-1].content)
+
+    async def test_setquery_respects_maximum_cache_duration(self):
+        long_data = {
+            "id": "tooLong1234",
+            "title": "Ten Hour Mix",
+            "url": "https://example.com/stream",
+            "webpage_url": canonical_youtube_url("tooLong1234"),
+            "channel": "Mix Channel",
+            "duration": 36000,
+        }
+
+        ctx = self._make_ctx()
+        with (
+            patch("playback_mixin.run_yt_dlp_search", return_value=long_data),
+            patch("playback_mixin.run_yt_dlp_extractor") as mock_download,
+        ):
+            await CacheCommandsMixin.set_query.callback(
+                self.cog,
+                ctx,
+                raw_args="ten hour mix https://www.youtube.com/watch?v=tooLong1234",
+            )
+
+        mock_download.assert_not_called()
+        self.assertIsNone(self.db_manager.get_cached_song("tooLong1234"))
+        self.assertIsNone(self.db_manager.get_cached_query("ten hour mix"))
+        self.assertIn("exceeds the maximum cache length", ctx.sent_messages[-1].content)
+
+    async def test_setquery_respects_disabled_cache_downloads_and_validation(self):
+        self.cog.cache_downloads_enabled = False
+        search_data = {
+            "id": "noDlVid1234",
+            "title": "Uncached Song",
+            "url": "https://example.com/stream",
+            "webpage_url": canonical_youtube_url("noDlVid1234"),
+            "channel": "Channel",
+            "duration": 180,
+        }
+        ctx = self._make_ctx()
+        with patch("playback_mixin.run_yt_dlp_search", return_value=search_data):
+            await CacheCommandsMixin.set_query.callback(
+                self.cog,
+                ctx,
+                raw_args="some song https://www.youtube.com/watch?v=noDlVid1234",
+            )
+
+        self.assertIsNone(self.db_manager.get_cached_query("some song"))
+        self.assertIn("downloads are currently disabled", ctx.sent_messages[-1].content)
+
+        # Invalid URL rejected before yt-dlp.
+        bad_ctx = self._make_ctx()
+        await CacheCommandsMixin.set_query.callback(
+            self.cog, bad_ctx, raw_args="some song not-a-url"
+        )
+        self.assertIn("valid YouTube video URL", bad_ctx.sent_messages[-1].content)
+
+    async def test_delquery_deletes_mapping_only_and_handles_missing(self):
+        file_path = self._seed_cached_song("keepFile123", "Keep Me")
+        self.db_manager.upsert_cached_query("remove me", "keepFile123")
+
+        ctx = self._make_ctx()
+        await CacheCommandsMixin.del_query.callback(self.cog, ctx, query="  REMOVE   ME ")
+        self.assertIsNone(self.db_manager.get_cached_query("remove me"))
+        self.assertIsNotNone(self.db_manager.get_cached_song("keepFile123"))
+        self.assertTrue(file_path.exists())
+        self.assertIn("Removed cached query mapping", ctx.sent_messages[-1].content)
+
+        # Second call reports not found.
+        await CacheCommandsMixin.del_query.callback(self.cog, ctx, query="remove me")
+        self.assertIn("No cached query mapping found", ctx.sent_messages[-1].content)
 
 
 if __name__ == "__main__":
