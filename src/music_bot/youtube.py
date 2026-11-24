@@ -6,7 +6,8 @@ from pathlib import Path
 
 import yt_dlp
 
-from config import FFMPEG_EXECUTABLE, SONG_CACHE_DIR
+from audio_normalization import build_stream_loudnorm_filter, normalize_audio_file
+from config import FFMPEG_EXECUTABLE, LOUDNORM_ENABLED, SONG_CACHE_DIR
 from youtube_urls import (
     SEARCH_PREFIXES,
     SUPPORTED_URL_SCHEMES,
@@ -72,7 +73,7 @@ YDL_OPTIONS = {
             'player_client': ['default', '-android_sdkless']
         }
     },
-    'postprocessors': [{
+    'postprocessors': [] if LOUDNORM_ENABLED else [{
         'key': 'FFmpegExtractAudio',
         'preferredcodec': 'opus',
         'preferredquality': '192',
@@ -81,9 +82,41 @@ YDL_OPTIONS = {
 
 FFMPEG_OPTIONS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn',
+    'options': f'-vn -af {build_stream_loudnorm_filter()}' if LOUDNORM_ENABLED else '-vn',
     'executable': FFMPEG_EXECUTABLE
 }
+
+
+class LoudnormOpusPostProcessor(yt_dlp.postprocessor.PostProcessor):
+    """Two-pass EBU R128 loudness normalization + Opus encode for new downloads."""
+
+    def run(self, info):
+        filepath = info.get('filepath') or info.get('_filename')
+        if not filepath:
+            return [], info
+
+        src = Path(filepath)
+        if not src.is_file():
+            return [], info
+
+        dst = src.with_suffix('.opus')
+        ok, detail = normalize_audio_file(src, dst, ffmpeg_executable=FFMPEG_EXECUTABLE)
+        if ok:
+            if src != dst and src.exists():
+                try:
+                    src.unlink()
+                except OSError as exc:
+                    logger.warning("Could not remove temporary download %s: %s", src.name, exc)
+            info['filepath'] = str(dst)
+            info['ext'] = 'opus'
+            logger.info("Normalized downloaded audio (%s): %s", detail, dst.name)
+        else:
+            logger.warning(
+                "Failed to normalize downloaded audio %s (%s); keeping original file.",
+                src.name,
+                detail,
+            )
+        return [], info
 
 
 def prepare_yt_dlp_query(query: str, search_count: int = 1) -> str:
@@ -166,6 +199,8 @@ def run_yt_dlp_extractor(query, download=False):
         prepared_query = prepare_yt_dlp_query(query)
 
         with yt_dlp.YoutubeDL(ydl_options) as ydl:
+            if download and LOUDNORM_ENABLED:
+                ydl.add_post_processor(LoudnormOpusPostProcessor(), when='post_process')
             data = ydl.extract_info(prepared_query, download=download)
         return data
     except yt_dlp.utils.DownloadError as e:

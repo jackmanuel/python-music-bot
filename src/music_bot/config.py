@@ -21,6 +21,12 @@ DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 FFMPEG_EXECUTABLE = os.getenv("FFMPEG_EXECUTABLE_PATH", "ffmpeg")
 FFMPEG_VOLUME = "0.5"
 
+LOUDNORM_ENABLED = os.getenv("LOUDNORM_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+LOUDNORM_TARGET_LUFS = float(os.getenv("LOUDNORM_TARGET_LUFS", "-14.0"))
+LOUDNORM_TRUE_PEAK = float(os.getenv("LOUDNORM_TRUE_PEAK", "-1.5"))
+LOUDNORM_LRA = float(os.getenv("LOUDNORM_LRA", "11.0"))
+CACHE_OPUS_BITRATE = os.getenv("CACHE_OPUS_BITRATE", "128k")
+
 INACTIVITY_TIMEOUT_MINUTES = 20
 MAX_SONG_DURATION_SECONDS = int(os.getenv("MAX_SONG_DURATION_SECONDS", "1800"))
 CACHE_MAX_SIZE_BYTES = int(float(os.getenv("CACHE_MAX_SIZE_GB", "30")) * 1_000_000_000)

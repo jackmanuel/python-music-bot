@@ -8,7 +8,7 @@ from discord.ext import commands
 from formatting import format_discord_date
 from youtube import AGE_RESTRICTED_PLAYBACK_MESSAGE, FFMPEG_OPTIONS, video_url_from_entry
 from youtube_urls import normalize_search_query
-from config import FFMPEG_EXECUTABLE, MAX_SONG_DURATION_SECONDS
+from config import FFMPEG_EXECUTABLE, LOUDNORM_ENABLED, MAX_SONG_DURATION_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -335,15 +335,17 @@ class VoiceCommandsMixin:
             logger.debug(f"Attempting to play URL: {song_info['url']}")
             try:
                 if song_info.get('is_cached', False):
-                    local_ffmpeg_options = {
-                        'executable': FFMPEG_EXECUTABLE
-                    }
+                    source = await discord.FFmpegOpusAudio.from_probe(
+                        song_info['url'], executable=FFMPEG_EXECUTABLE
+                    )
+                elif LOUDNORM_ENABLED:
+                    source = discord.FFmpegOpusAudio(
+                        song_info['url'], **FFMPEG_OPTIONS
+                    )
                 else:
-                    local_ffmpeg_options = FFMPEG_OPTIONS
-                
-                source = await discord.FFmpegOpusAudio.from_probe(
-                    song_info['url'], **local_ffmpeg_options
-                )
+                    source = await discord.FFmpegOpusAudio.from_probe(
+                        song_info['url'], **FFMPEG_OPTIONS
+                    )
                 vc.play(source, after=lambda e: self._play_next(guild_id, error=e))
 
                 embed = discord.Embed(title="Now Playing", description=f"[{song_info['title']}]({song_info['webpage_url']})", color=discord.Color.green())

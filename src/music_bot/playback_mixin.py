@@ -7,7 +7,7 @@ import time
 import discord
 import yt_dlp
 
-from config import FFMPEG_EXECUTABLE, MAX_SONG_DURATION_SECONDS, SONG_CACHE_DIR
+from config import FFMPEG_EXECUTABLE, LOUDNORM_ENABLED, MAX_SONG_DURATION_SECONDS, SONG_CACHE_DIR
 from youtube import FFMPEG_OPTIONS, is_age_restricted_yt_dlp_error, is_livestream_info, run_yt_dlp_extractor, run_yt_dlp_search, run_yt_dlp_search_results
 from youtube_urls import (
     canonical_youtube_url,
@@ -598,15 +598,17 @@ class PlaybackMixin:
         vc = self.voice_clients[guild_id]
         try:
             if next_song_info.get('is_cached', False):
-                local_ffmpeg_options = {
-                    'executable': FFMPEG_EXECUTABLE
-                }
+                source = await discord.FFmpegOpusAudio.from_probe(
+                    next_song_info['url'], executable=FFMPEG_EXECUTABLE
+                )
+            elif LOUDNORM_ENABLED:
+                source = discord.FFmpegOpusAudio(
+                    next_song_info['url'], **FFMPEG_OPTIONS
+                )
             else:
-                local_ffmpeg_options = FFMPEG_OPTIONS
-            
-            source = await discord.FFmpegOpusAudio.from_probe(
-                next_song_info['url'], **local_ffmpeg_options
-            )
+                source = await discord.FFmpegOpusAudio.from_probe(
+                    next_song_info['url'], **FFMPEG_OPTIONS
+                )
             vc.play(source, after=lambda e: self._play_next(guild_id, error=e))
             self.last_activity[guild_id] = time.time()
         except discord.ClientException as e:
