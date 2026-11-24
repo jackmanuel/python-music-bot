@@ -8,6 +8,7 @@ SRC_DIR = PROJECT_ROOT / "src" / "music_bot"
 sys.path.insert(0, str(SRC_DIR))
 
 from youtube import (
+    AUDIO_FORMAT_SELECTOR,
     REMOTE_COMPONENTS,
     YDL_OPTIONS,
     age_restricted_error_result,
@@ -64,6 +65,10 @@ class YoutubeQueryTests(unittest.TestCase):
     def test_remote_components_are_passed_as_a_list(self):
         self.assertEqual(REMOTE_COMPONENTS, ["ejs:github"])
         self.assertEqual(YDL_OPTIONS["remote_components"], ["ejs:github"])
+
+    def test_audio_format_selector_prefers_stereo_with_fallback(self):
+        self.assertEqual(AUDIO_FORMAT_SELECTOR, "bestaudio[audio_channels<=?2]/bestaudio/best")
+        self.assertEqual(YDL_OPTIONS["format"], AUDIO_FORMAT_SELECTOR)
 
     def test_search_selection_skips_channels_and_uses_first_video(self):
         selected = select_first_video_entry(

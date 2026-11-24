@@ -32,6 +32,8 @@ def detect_js_runtimes() -> dict:
 
     deno_path = first_existing_path(
         os.getenv("DENO_EXECUTABLE_PATH"),
+        Path.home() / ".deno" / "bin" / "deno",
+        Path.home() / ".local" / "bin" / "deno",
         shutil.which("deno"),
         Path.home() / ".deno" / "bin" / "deno.exe",
     )
@@ -40,6 +42,7 @@ def detect_js_runtimes() -> dict:
 
     node_path = first_existing_path(
         os.getenv("NODE_EXECUTABLE_PATH"),
+        Path.home() / ".local" / "bin" / "node",
         shutil.which("node"),
         Path("C:/Program Files/nodejs/node.exe"),
     )
@@ -51,9 +54,10 @@ def detect_js_runtimes() -> dict:
 
 JS_RUNTIMES = detect_js_runtimes()
 REMOTE_COMPONENTS = ["ejs:github"]
+AUDIO_FORMAT_SELECTOR = 'bestaudio[audio_channels<=?2]/bestaudio/best'
 
 YDL_OPTIONS = {
-    'format': 'bestaudio/best',
+    'format': AUDIO_FORMAT_SELECTOR,
     'outtmpl': str(SONG_CACHE_DIR / '%(extractor)s-%(id)s.%(ext)s'),
     'restrictfilenames': True,
     'noplaylist': True,
@@ -217,7 +221,7 @@ def run_yt_dlp_search(query):
     """Runs yt-dlp to search for a video without downloading."""
     try:
         search_options = {
-            'format': 'bestaudio/best',
+            'format': AUDIO_FORMAT_SELECTOR,
             'restrictfilenames': True,
             'noplaylist': True,
             'nocheckcertificate': True,
@@ -269,7 +273,7 @@ def run_yt_dlp_search_results(query, result_count: int = SEARCH_RESULT_COUNT):
     try:
         requested_count = result_count * 2
         search_options = {
-            'format': 'bestaudio/best',
+            'format': AUDIO_FORMAT_SELECTOR,
             'restrictfilenames': True,
             'noplaylist': True,
             'nocheckcertificate': True,
