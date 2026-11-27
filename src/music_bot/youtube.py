@@ -2,8 +2,11 @@ import logging
 import os
 import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
+import discord
 import yt_dlp
 
 from audio_normalization import build_stream_loudnorm_filter, normalize_audio_file
@@ -91,8 +94,97 @@ FFMPEG_OPTIONS = {
 }
 
 
+def build_yt_dlp_stream_command(webpage_url: str) -> list[str]:
+    """Build a yt-dlp CLI command that streams bestaudio bytes to stdout."""
+    cmd = [
+        sys.executable,
+        "-m",
+        "yt_dlp",
+        "-f",
+        AUDIO_FORMAT_SELECTOR,
+        "--no-playlist",
+        "--no-check-certificates",
+        "--quiet",
+        "--no-warnings",
+        "--source-address",
+        "0.0.0.0",
+        "--extractor-args",
+        "youtube:player_client=default,-android_sdkless",
+    ]
+    for component in REMOTE_COMPONENTS:
+        cmd.extend(["--remote-components", component])
+    for runtime_name, runtime_cfg in JS_RUNTIMES.items():
+        runtime_path = runtime_cfg.get("path") if isinstance(runtime_cfg, dict) else None
+        spec = f"{runtime_name}:{runtime_path}" if runtime_path else runtime_name
+        cmd.extend(["--js-runtimes", spec])
+    cmd.extend(["-o", "-", webpage_url])
+    return cmd
+
+
+class YtDlpPipeOpusAudio(discord.FFmpegOpusAudio):
+    """Streams audio from yt-dlp stdout directly into FFmpegOpusAudio.
+
+    Avoids HTTP 403 errors that FFmpeg hits when opening signed googlevideo.com
+    URLs directly, and avoids stream URL expiration while tracks sit in queue.
+    """
+
+    def __init__(
+        self,
+        webpage_url: str,
+        *,
+        executable: str = FFMPEG_EXECUTABLE,
+        options: str | None = None,
+    ) -> None:
+        cmd = build_yt_dlp_stream_command(webpage_url)
+        self._ytdlp_proc: subprocess.Popen | None = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            super().__init__(
+                self._ytdlp_proc.stdout,
+                pipe=True,
+                executable=executable,
+                options=options,
+            )
+        except Exception:
+            self._terminate_ytdlp()
+            raise
+
+    def _terminate_ytdlp(self) -> None:
+        proc = getattr(self, "_ytdlp_proc", None)
+        if proc is None:
+            return
+        self._ytdlp_proc = None
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=2)
+        except OSError:
+            pass
+        if proc.stdout is not None:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+
+    def cleanup(self) -> None:
+        super().cleanup()
+        self._terminate_ytdlp()
+
+
 class LoudnormOpusPostProcessor(yt_dlp.postprocessor.PostProcessor):
     """Two-pass EBU R128 loudness normalization + Opus encode for new downloads."""
+
+    def __init__(self, *, low_priority: bool = False, threads: int | None = None):
+        super().__init__()
+        self.low_priority = low_priority
+        self.threads = threads
 
     def run(self, info):
         filepath = info.get('filepath') or info.get('_filename')
@@ -104,7 +196,13 @@ class LoudnormOpusPostProcessor(yt_dlp.postprocessor.PostProcessor):
             return [], info
 
         dst = src.with_suffix('.opus')
-        ok, detail = normalize_audio_file(src, dst, ffmpeg_executable=FFMPEG_EXECUTABLE)
+        ok, detail = normalize_audio_file(
+            src,
+            dst,
+            ffmpeg_executable=FFMPEG_EXECUTABLE,
+            threads=self.threads,
+            low_priority=self.low_priority,
+        )
         if ok:
             if src != dst and src.exists():
                 try:
@@ -195,7 +293,7 @@ def get_yt_dlp_logger() -> logging.Logger:
     return ydl_logger
 
 
-def run_yt_dlp_extractor(query, download=False):
+def run_yt_dlp_extractor(query, download=False, *, low_priority=False, threads=None):
     """Runs yt-dlp extract_info in a way that's pickleable for multiprocessing."""
     try:
         ydl_options = YDL_OPTIONS.copy()
@@ -204,7 +302,10 @@ def run_yt_dlp_extractor(query, download=False):
 
         with yt_dlp.YoutubeDL(ydl_options) as ydl:
             if download and LOUDNORM_ENABLED:
-                ydl.add_post_processor(LoudnormOpusPostProcessor(), when='post_process')
+                ydl.add_post_processor(
+                    LoudnormOpusPostProcessor(low_priority=low_priority, threads=threads),
+                    when='post_process',
+                )
             data = ydl.extract_info(prepared_query, download=download)
         return data
     except yt_dlp.utils.DownloadError as e:

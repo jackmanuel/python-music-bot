@@ -1,5 +1,6 @@
 import asyncio
 import concurrent.futures
+import functools
 import logging
 import os
 import time
@@ -8,7 +9,15 @@ import discord
 import yt_dlp
 
 from config import FFMPEG_EXECUTABLE, LOUDNORM_ENABLED, MAX_SONG_DURATION_SECONDS, SONG_CACHE_DIR
-from youtube import FFMPEG_OPTIONS, is_age_restricted_yt_dlp_error, is_livestream_info, run_yt_dlp_extractor, run_yt_dlp_search, run_yt_dlp_search_results
+from youtube import (
+    FFMPEG_OPTIONS,
+    YtDlpPipeOpusAudio,
+    is_age_restricted_yt_dlp_error,
+    is_livestream_info,
+    run_yt_dlp_extractor,
+    run_yt_dlp_search,
+    run_yt_dlp_search_results,
+)
 from youtube_urls import (
     canonical_youtube_url,
     default_youtube_thumbnail_url,
@@ -113,9 +122,17 @@ class PlaybackMixin:
 
     def _record_completed_query_cache(self, song_info):
         """Record normalized search query -> YouTube ID mapping for completed cached tracks."""
-        if not song_info or not song_info.get('is_cached', False):
+        if not song_info:
             return
         youtube_id = song_info.get('youtube_id')
+        is_cached = song_info.get('is_cached', False)
+        if not is_cached:
+            if not song_info.get('created_cache_entry', False):
+                return
+            song_cache = getattr(self, 'song_cache', None)
+            cached_file = song_cache.get(youtube_id) if (song_cache is not None and youtube_id) else None
+            if not self._is_valid_cached_file(cached_file):
+                return
         search_query = song_info.get('search_query_normalized') or song_info.get('source_query_normalized')
         if not youtube_id or not search_query:
             return
@@ -188,12 +205,35 @@ class PlaybackMixin:
         }
 
     def _request_cache_eviction(self, song_info):
-        """Request eviction when this playback request created its cache entry."""
-        if not song_info.get('created_cache_entry', False):
+        """Request eviction when this playback request created or scheduled a new cache entry."""
+        youtube_id = song_info.get('youtube_id') if song_info else None
+        bg_tasks = getattr(self, 'background_cache_tasks', None)
+        is_bg_pending = bool(
+            song_info
+            and youtube_id
+            and (
+                song_info.get('background_caching', False)
+                or (bg_tasks and youtube_id in bg_tasks)
+            )
+        )
+        if is_bg_pending:
+            cancelled = getattr(self, 'cancelled_background_caches', None)
+            if cancelled is None:
+                cancelled = set()
+                self.cancelled_background_caches = cancelled
+            cancelled.add(youtube_id)
+            if not song_info.get('created_cache_entry', False):
+                logger.info(
+                    "Marked in-flight background cache for '%s' (%s) for cancellation.",
+                    song_info.get('title', 'Unknown Title'),
+                    youtube_id,
+                )
+                return 'cancelled'
+
+        if not song_info or not song_info.get('created_cache_entry', False):
             return None
 
-        youtube_id = song_info.get('youtube_id')
-        file_path = song_info.get('url')
+        file_path = song_info.get('cached_file_path') or song_info.get('url')
         if not youtube_id or not file_path:
             logger.warning("Cannot evict a new cache entry without its YouTube ID and file path.")
             return 'failed'
@@ -207,6 +247,200 @@ class PlaybackMixin:
             'title': song_info.get('title', 'Unknown Title'),
         }
         return self._process_pending_cache_evictions().get(youtube_id, 'deferred')
+
+    @staticmethod
+    def _find_downloaded_cache_file(youtube_id, actual_video_data):
+        """Locate the downloaded audio file in SONG_CACHE_DIR for a yt-dlp result."""
+        ext = actual_video_data.get('ext', 'opus')
+        extractor_name = actual_video_data.get('extractor', 'youtube')
+        expected_filename_base = f"{extractor_name}-{youtube_id}"
+
+        potential_path = str(SONG_CACHE_DIR / f"{expected_filename_base}.{ext}")
+        if os.path.exists(potential_path):
+            return potential_path, expected_filename_base
+
+        try:
+            for fname in os.listdir(SONG_CACHE_DIR):
+                if fname.startswith(expected_filename_base) and not fname.startswith('.'):
+                    return str(SONG_CACHE_DIR / fname), expected_filename_base
+        except OSError:
+            pass
+        return None, expected_filename_base
+
+    def _schedule_background_cache(self, song_info, download_query):
+        """Schedule a low-priority background download + normalization into song_cache."""
+        if getattr(self, 'is_shutting_down', False):
+            return None
+
+        youtube_id = song_info.get('youtube_id')
+        song_cache = getattr(self, 'song_cache', None)
+        if not youtube_id or song_cache is None:
+            return None
+
+        if self._is_valid_cached_file(song_cache.get(youtube_id)):
+            return None
+
+        cancelled = getattr(self, 'cancelled_background_caches', None)
+        if cancelled is not None:
+            cancelled.discard(youtube_id)
+
+        tasks = getattr(self, 'background_cache_tasks', None)
+        if tasks is None:
+            tasks = {}
+            self.background_cache_tasks = tasks
+
+        existing_task = tasks.get(youtube_id)
+        if existing_task and not existing_task.done():
+            song_info['background_caching'] = True
+            return existing_task
+
+        song_info['background_caching'] = True
+        task = asyncio.create_task(self._run_background_cache(song_info, download_query))
+        tasks[youtube_id] = task
+        return task
+
+    async def _run_background_cache(self, song_info, download_query):
+        """Download and normalize an uncached track in the background at low CPU priority."""
+        youtube_id = song_info.get('youtube_id')
+        title = song_info.get('title', 'Unknown Title')
+        estimated_size_bytes = song_info.get('estimated_size_bytes', 0)
+
+        try:
+            if getattr(self, 'is_shutting_down', False):
+                return
+
+            cancelled = getattr(self, 'cancelled_background_caches', set())
+            if youtube_id in cancelled:
+                logger.info("Skipping cancelled background cache for '%s' (%s).", title, youtube_id)
+                return
+
+            song_cache = getattr(self, 'song_cache', None)
+            if song_cache is None or self._is_valid_cached_file(song_cache.get(youtube_id)):
+                return
+            if not song_cache.can_accept_download(estimated_size_bytes):
+                logger.info(
+                    "Skipping background cache for '%s' (%s); cache size limit reached.",
+                    title,
+                    youtube_id,
+                )
+                return
+
+            executor = getattr(self, 'background_cache_executor', None) or getattr(self, 'thread_executor', None)
+            loop = asyncio.get_running_loop()
+            logger.info("Starting low-priority background cache for '%s' (%s)...", title, youtube_id)
+            downloaded_data = await loop.run_in_executor(
+                executor,
+                functools.partial(
+                    run_yt_dlp_extractor,
+                    download_query,
+                    True,
+                    low_priority=True,
+                    threads=1,
+                ),
+            )
+
+            if not downloaded_data or (isinstance(downloaded_data, dict) and downloaded_data.get('error')):
+                logger.warning("Background cache download did not succeed for '%s' (%s).", title, youtube_id)
+                return
+
+            actual_video_data = downloaded_data
+            if isinstance(downloaded_data, dict) and downloaded_data.get('entries'):
+                actual_video_data = downloaded_data['entries'][0]
+
+            found_file, expected_base = self._find_downloaded_cache_file(youtube_id, actual_video_data)
+            if not found_file:
+                logger.error(
+                    "Background cached file not found for '%s' (%s). Expected base: %s",
+                    title,
+                    youtube_id,
+                    expected_base,
+                )
+                return
+
+            cancelled = getattr(self, 'cancelled_background_caches', set())
+            if getattr(self, 'is_shutting_down', False) or youtube_id in cancelled:
+                try:
+                    os.remove(found_file)
+                except OSError as removal_error:
+                    logger.warning(
+                        "Failed to remove cancelled background cache file %s: %s",
+                        found_file,
+                        removal_error,
+                    )
+                if isinstance(cancelled, set):
+                    cancelled.discard(youtube_id)
+                logger.info("Discarded cancelled background cache for '%s' (%s).", title, youtube_id)
+                return
+
+            if not song_cache.add(youtube_id, found_file):
+                try:
+                    os.remove(found_file)
+                except OSError as removal_error:
+                    logger.error(
+                        "Failed to remove over-limit background cache file %s: %s",
+                        found_file,
+                        removal_error,
+                    )
+                song_cache.refresh_capacity()
+                return
+
+            resolved_title = song_info.get('title') or actual_video_data.get('title') or downloaded_data.get('title')
+            resolved_thumbnail = song_info.get('thumbnail') or actual_video_data.get('thumbnail') or downloaded_data.get('thumbnail')
+            resolved_duration = (
+                song_info.get('duration')
+                if song_info.get('duration') is not None
+                else actual_video_data.get('duration')
+            )
+            resolved_channel = song_info.get('channel') or actual_video_data.get('channel') or downloaded_data.get('channel')
+            self._upsert_cached_song_metadata(
+                file_path=found_file,
+                title=resolved_title,
+                channel_name=resolved_channel,
+                duration=resolved_duration,
+                thumbnail_url=resolved_thumbnail,
+            )
+
+            song_info['created_cache_entry'] = True
+            song_info['cached_file_path'] = found_file
+            song_info['background_caching'] = False
+
+            if song_info.get('completed_playback', False):
+                self._record_completed_query_cache(song_info)
+
+            logger.info("Background cached and ready: '%s' (%s) at %s", resolved_title or title, youtube_id, found_file)
+        except asyncio.CancelledError:
+            logger.info("Background cache task cancelled for '%s' (%s).", title, youtube_id)
+            raise
+        except Exception as exc:
+            logger.warning("Background cache failed for '%s' (%s): %s", title, youtube_id, exc)
+        finally:
+            song_info['background_caching'] = False
+            tasks = getattr(self, 'background_cache_tasks', None)
+            if tasks and tasks.get(youtube_id) is asyncio.current_task():
+                tasks.pop(youtube_id, None)
+
+    def _upgrade_queued_song_to_cache(self, song_info):
+        """Switch a queued stream entry to its cached .opus file if background caching finished."""
+        if not song_info or song_info.get('is_cached', False):
+            return False
+        youtube_id = song_info.get('youtube_id')
+        song_cache = getattr(self, 'song_cache', None)
+        if not youtube_id or song_cache is None:
+            return False
+        cached_file = song_cache.get(youtube_id)
+        if not self._is_valid_cached_file(cached_file):
+            return False
+
+        song_info['url'] = cached_file
+        song_info['cached_file_path'] = cached_file
+        song_info['is_cached'] = True
+        logger.info(
+            "Upgraded queued song '%s' (%s) to newly cached file: %s",
+            song_info.get('title', 'Unknown Title'),
+            youtube_id,
+            cached_file,
+        )
+        return True
 
     async def _search_results(self, query, result_count=5):
         """Searches yt-dlp for flat video results without blocking the event loop."""
@@ -541,6 +775,7 @@ class PlaybackMixin:
 
         if not was_skipped and self.current_song.get(guild_id):
             finished_song = self.current_song[guild_id]
+            finished_song['completed_playback'] = True
             request_id = finished_song.get('request_id')
             if request_id:
                 self.db_manager.update_play_status(request_id, 'completed')
@@ -580,6 +815,7 @@ class PlaybackMixin:
             return
 
         next_song_info = queue.popleft()
+        self._upgrade_queued_song_to_cache(next_song_info)
         next_song_info['start_time'] = time.time()
         self.current_song[guild_id] = next_song_info
         self._process_pending_cache_evictions()
@@ -600,6 +836,12 @@ class PlaybackMixin:
             if next_song_info.get('is_cached', False):
                 source = await discord.FFmpegOpusAudio.from_probe(
                     next_song_info['url'], executable=FFMPEG_EXECUTABLE
+                )
+            elif next_song_info.get('webpage_url'):
+                source = YtDlpPipeOpusAudio(
+                    next_song_info['webpage_url'],
+                    executable=FFMPEG_EXECUTABLE,
+                    options=FFMPEG_OPTIONS['options'],
                 )
             elif LOUDNORM_ENABLED:
                 source = discord.FFmpegOpusAudio(

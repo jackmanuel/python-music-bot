@@ -798,11 +798,19 @@ class QueryCacheWriteAndInvalidationTests(unittest.IsolatedAsyncioTestCase):
             }
 
         cog._extract_info = fake_extract
+        scheduled_bg = []
+        cog._schedule_background_cache = lambda info, q: scheduled_bg.append((info, q))
 
-        with patch("voice_commands_mixin.discord.FFmpegOpusAudio.from_probe", new=AsyncMock(return_value=object())):
+        with (
+            patch("voice_commands_mixin.YtDlpPipeOpusAudio", return_value=object()),
+            patch("voice_commands_mixin.discord.FFmpegOpusAudio", return_value=object()),
+            patch("voice_commands_mixin.discord.FFmpegOpusAudio.from_probe", new=AsyncMock(return_value=object())),
+        ):
             await VoiceCommandsMixin.play.callback(cog, ctx, query="  My  Search  Terms ")
 
-        self.assertEqual(len(extracted_calls), 2)
+        self.assertEqual(extracted_calls, [("My  Search  Terms", False)])
+        self.assertEqual(len(scheduled_bg), 1)
+        self.assertEqual(scheduled_bg[0][1], canonical_youtube_url("dlVideo1234"))
         self.assertEqual(cog.current_song[10]["search_query_normalized"], "my search terms")
         self.assertEqual(cog.current_song[10]["source_query_normalized"], "my search terms")
 

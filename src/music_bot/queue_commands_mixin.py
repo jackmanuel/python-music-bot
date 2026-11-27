@@ -148,6 +148,8 @@ class QueueCommandsMixin:
                     message += " It was a new download, so it was also removed from cache."
                 elif eviction_status == 'deferred':
                     message += " Its new cache download will be removed when no longer in use."
+                elif eviction_status == 'cancelled':
+                    message += " Its background cache download was cancelled."
                 await ctx.send(message)
 
             except IndexError:

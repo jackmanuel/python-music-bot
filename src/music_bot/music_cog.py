@@ -41,6 +41,8 @@ class MusicCog(
         self.voice_clients = {}
         self.last_activity = {}
         self.pending_cache_evictions = {}
+        self.background_cache_tasks = {}
+        self.cancelled_background_caches = set()
         self.is_shutting_down = False
         self.cache_downloads_enabled = CACHE_DOWNLOADS_ENABLED
         self.song_cache = SongCache(
@@ -60,6 +62,12 @@ class MusicCog(
         # ThreadPoolExecutor for download operations - avoids pickling issues with yt-dlp
         # when downloading (especially for SoundCloud, where yt-dlp returns unpickleable objects)
         self.thread_executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        # Single-worker executor for low-priority background caching + loudness normalization
+        # so queued downloads never contend with active Discord playback on low-core CPUs.
+        self.background_cache_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="bg-cache",
+        )
 
         self.db_manager = DatabaseManager(DATABASE_FILE)
         self.db_manager.reconcile_cache(self.song_cache.youtube_ids_on_disk())
@@ -71,10 +79,15 @@ class MusicCog(
 
     def cog_unload(self):
         self.begin_shutdown()
+        for task in list(getattr(self, 'background_cache_tasks', {}).values()):
+            if not task.done():
+                task.cancel()
         logger.info("Shutting down ProcessPoolExecutor...")
         self.process_executor.shutdown(wait=False, cancel_futures=True)
         logger.info("Shutting down ThreadPoolExecutor...")
         self.thread_executor.shutdown(wait=False, cancel_futures=True)
+        logger.info("Shutting down background cache ThreadPoolExecutor...")
+        self.background_cache_executor.shutdown(wait=False, cancel_futures=True)
         logger.info("Cancelling inactivity check task.")
         self.inactivity_check.cancel()
 

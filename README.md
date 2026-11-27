@@ -8,8 +8,10 @@ I built this for my own Discord server, and I am open sourcing it mainly as a pr
 
 *   Plays YouTube audio from search terms, selected search results, or direct URLs.
 *   Supports SoundCloud URLs through the same `yt-dlp` backend.
-*   Caches downloaded songs and search results locally by default so repeated plays start immediately without duplicate downloads or YouTube lookups.
-*   Can run in a no-cache-download mode that reuses existing cached songs and streams uncached songs.
+*   Streams uncached songs immediately via `yt-dlp` piped into FFmpeg while downloading and caching eligible tracks in a low-priority background worker.
+*   Caches downloaded songs and search results locally by default so repeated plays (and queued tracks that finish caching before their turn) start immediately with Opus passthrough and no duplicate YouTube lookups.
+*   Applies configurable EBU R128 loudness normalization (two-pass linear normalization for cached downloads, real-time single-pass normalization for live streams).
+*   Can run in a no-cache-download mode (`--no-cache` / `DISABLE_SONG_CACHE=true`) that reuses existing cached songs and streams uncached songs without background downloads.
 *   Tracks every song request in a local SQLite database, including the requester, server, resolved title, URL, duration, and play status.
 *   Uses that play history for stats commands, leaderboards, an animated leaderboard race, and cumulative play graphs.
 *   Runs as a systemd user service with graceful shutdown and automatic restart on failure.
@@ -66,7 +68,7 @@ Set your Discord bot token in `.env`:
 DISCORD_BOT_TOKEN=YOUR_BOT_TOKEN_HERE
 ```
 
-Optional settings, including a custom FFmpeg path, maximum cache download duration, and disabling new cache downloads (`DISABLE_SONG_CACHE=true`), are documented in `.env.example`.
+Optional settings, including a custom FFmpeg path, EBU R128 loudness normalization (`LOUDNORM_ENABLED`, target LUFS/true-peak/LRA, Opus bitrate), maximum cache download duration, and disabling new cache downloads (`DISABLE_SONG_CACHE=true`), are documented in `.env.example`.
 
 ### Running The Bot
 

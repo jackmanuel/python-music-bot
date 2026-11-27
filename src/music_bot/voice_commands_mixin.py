@@ -6,7 +6,7 @@ import discord
 from discord.ext import commands
 
 from formatting import format_discord_date
-from youtube import AGE_RESTRICTED_PLAYBACK_MESSAGE, FFMPEG_OPTIONS, video_url_from_entry
+from youtube import AGE_RESTRICTED_PLAYBACK_MESSAGE, FFMPEG_OPTIONS, YtDlpPipeOpusAudio, video_url_from_entry
 from youtube_urls import normalize_search_query
 from config import FFMPEG_EXECUTABLE, LOUDNORM_ENABLED, MAX_SONG_DURATION_SECONDS
 
@@ -243,6 +243,12 @@ class VoiceCommandsMixin:
             await ctx.send(AGE_RESTRICTED_PLAYBACK_MESSAGE)
             return
         
+        if search_query_normalized:
+            song_info['search_query_normalized'] = search_query_normalized
+            song_info['source_query_normalized'] = search_query_normalized
+            if cache_query_only_if_missing:
+                song_info['cache_query_only_if_missing'] = True
+
         should_download = self._should_download_to_cache(song_info)
         if song_info.get('exceeds_cache_duration', False) and not song_info.get('is_cached', False):
             logger.info(
@@ -252,33 +258,10 @@ class VoiceCommandsMixin:
             )
 
         if should_download:
-            if processing_message:
-                title = song_info.get('title', 'Unknown Title')
-                await processing_message.edit(content=f"Downloading **{title}**...")
-
             download_query = song_info.get('webpage_url') or query_stripped
-            song_info = await self._extract_info(download_query, download=True)
-
-            if getattr(self, 'is_shutting_down', False):
-                return
-            
-            if not song_info:
-                await ctx.send(f"Failed to download `{query}`. Please try again.")
-                return
-
-            if isinstance(song_info, dict) and song_info.get('error') == 'livestream':
-                await ctx.send("Video is a livestream, cannot play.")
-                return
-            if isinstance(song_info, dict) and song_info.get('error') == 'age_restricted':
-                logger.info(f"Sent age-restricted playback message for query: {download_query}")
-                await ctx.send(AGE_RESTRICTED_PLAYBACK_MESSAGE)
-                return
-
-        if search_query_normalized:
-            song_info['search_query_normalized'] = search_query_normalized
-            song_info['source_query_normalized'] = search_query_normalized
-            if cache_query_only_if_missing:
-                song_info['cache_query_only_if_missing'] = True
+            schedule_bg = getattr(self, '_schedule_background_cache', None)
+            if schedule_bg:
+                schedule_bg(song_info, download_query)
 
         try:
             request_id = self.db_manager.log_song_request(
@@ -337,6 +320,12 @@ class VoiceCommandsMixin:
                 if song_info.get('is_cached', False):
                     source = await discord.FFmpegOpusAudio.from_probe(
                         song_info['url'], executable=FFMPEG_EXECUTABLE
+                    )
+                elif song_info.get('webpage_url'):
+                    source = YtDlpPipeOpusAudio(
+                        song_info['webpage_url'],
+                        executable=FFMPEG_EXECUTABLE,
+                        options=FFMPEG_OPTIONS['options'],
                     )
                 elif LOUDNORM_ENABLED:
                     source = discord.FFmpegOpusAudio(
@@ -503,9 +492,12 @@ class VoiceCommandsMixin:
             if 'request_id' in current:
                 self.db_manager.update_play_status(current['request_id'], 'skipped')
         else:
+            current['completed_playback'] = True
             if 'request_id' in current:
                 self.db_manager.update_play_status(current['request_id'], 'completed')
-            if not should_invalidate_query_cache and current.get('is_cached', False):
+            if not should_invalidate_query_cache and (
+                current.get('is_cached', False) or current.get('created_cache_entry', False)
+            ):
                 youtube_id = current.get('youtube_id')
                 search_query = current.get('search_query_normalized') or current.get('source_query_normalized')
                 upsert_cached_query = getattr(self.db_manager, 'upsert_cached_query', None)
@@ -524,7 +516,7 @@ class VoiceCommandsMixin:
                 eviction_status = request_eviction(current)
 
         message = f"Skipping: {current['title']}"
-        if eviction_status in {'deleted', 'deferred'}:
+        if eviction_status in {'deleted', 'deferred', 'cancelled'}:
             message += " — skipped early, so its new cache download will be removed from cache."
         elif invalidated_query_cache:
             message += " — skipped early, so the cached search result for this query was cleared."
