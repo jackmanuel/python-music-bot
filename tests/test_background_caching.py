@@ -15,11 +15,13 @@ sys.path.insert(0, str(SRC_DIR))
 import audio_normalization
 from database_manager import DatabaseManager
 from playback_mixin import PlaybackMixin
+from queue_commands_mixin import QueueCommandsMixin
 from song_cache import SongCache
 from voice_commands_mixin import VoiceCommandsMixin
+import youtube
 
 
-class _TestBotMixin(PlaybackMixin, VoiceCommandsMixin):
+class _TestBotMixin(PlaybackMixin, VoiceCommandsMixin, QueueCommandsMixin):
     pass
 
 
@@ -236,6 +238,270 @@ class BackgroundCachingTests(unittest.IsolatedAsyncioTestCase):
         mock_bg.assert_called_once_with(stream_info, "https://www.youtube.com/watch?v=strm1234567")
         mock_pipe.assert_called_once()
         vc.play.assert_called_once_with(fake_source, after=unittest.mock.ANY)
+
+    async def test_immediate_stream_waits_until_ready_before_play_and_defers_bg_cache(self):
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        vc.is_playing.return_value = False
+        vc.is_paused.return_value = False
+        channel = MagicMock()
+        vc.channel = channel
+        self.mixin.voice_clients[10] = vc
+
+        events = []
+
+        ctx = MagicMock()
+        ctx.guild.id = 10
+        ctx.guild.name = "Test Guild"
+        ctx.guild.voice_client = vc
+        ctx.author = MagicMock()
+        ctx.author.id = 42
+        ctx.author.voice.channel = channel
+
+        async def record_send(content=None, *, embed=None):
+            if embed is not None:
+                events.append(("embed", embed.title))
+            elif content is not None:
+                events.append(("message", content))
+            return MagicMock(edit=AsyncMock())
+
+        ctx.send = AsyncMock(side_effect=record_send)
+
+        stream_info = {
+            "title": "Buffered Stream Song",
+            "url": "https://example.com/direct-stream",
+            "webpage_url": "https://www.youtube.com/watch?v=buf12345678",
+            "channel": "Artist",
+            "duration": 210,
+            "youtube_id": "buf12345678",
+            "is_cached": False,
+            "was_previously_cached": False,
+            "created_cache_entry": False,
+            "exceeds_cache_duration": False,
+            "estimated_size_bytes": 1000,
+        }
+
+        class FakeStreamSource:
+            def __init__(self):
+                self.cleaned_up = False
+
+            async def wait_until_ready(self):
+                # While buffering, start_time must not be set yet and !np must not clear current_song.
+                self.assert_buffering_state()
+                events.append(("wait_until_ready",))
+                return True
+
+            def assert_buffering_state(self):
+                assert self_outer.mixin.current_song[10] is stream_info
+                assert stream_info["start_time"] is None
+                assert stream_info["is_buffering"] is True
+
+            def cleanup(self):
+                self.cleaned_up = True
+
+        self_outer = self
+        fake_source = FakeStreamSource()
+        vc.play.side_effect = lambda src, after=None: events.append(("vc.play", src is fake_source))
+
+        def record_bg(info, query):
+            events.append(("schedule_bg", query))
+
+        with (
+            patch.object(self.mixin, "_extract_info", new=AsyncMock(return_value=stream_info)),
+            patch.object(self.mixin, "_schedule_background_cache", side_effect=record_bg),
+            patch("voice_commands_mixin.YtDlpPipeOpusAudio", return_value=fake_source),
+        ):
+            await self.mixin._play_query(ctx, "buffered stream song")
+
+        self.assertEqual(
+            events,
+            [
+                ("message", "Searching for `buffered stream song`..."),
+                ("wait_until_ready",),
+                ("vc.play", True),
+                ("schedule_bg", "https://www.youtube.com/watch?v=buf12345678"),
+                ("embed", "Now Playing"),
+            ],
+        )
+        self.assertIsNotNone(stream_info["start_time"])
+        self.assertNotIn("is_buffering", stream_info)
+        self.assertFalse(fake_source.cleaned_up)
+
+    async def test_immediate_stream_failure_cleans_up_and_skips_bg_cache(self):
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        vc.is_playing.return_value = False
+        vc.is_paused.return_value = False
+        channel = MagicMock()
+        vc.channel = channel
+        self.mixin.voice_clients[10] = vc
+
+        ctx = MagicMock()
+        ctx.guild.id = 10
+        ctx.guild.name = "Test Guild"
+        ctx.guild.voice_client = vc
+        ctx.author = MagicMock()
+        ctx.author.id = 42
+        ctx.author.voice.channel = channel
+        ctx.send = AsyncMock(return_value=MagicMock(edit=AsyncMock()))
+
+        stream_info = {
+            "title": "Broken Stream Song",
+            "url": "https://example.com/direct-stream",
+            "webpage_url": "https://www.youtube.com/watch?v=brk12345678",
+            "channel": "Artist",
+            "duration": 210,
+            "youtube_id": "brk12345678",
+            "is_cached": False,
+            "was_previously_cached": False,
+            "created_cache_entry": False,
+            "exceeds_cache_duration": False,
+            "estimated_size_bytes": 1000,
+        }
+
+        fake_source = MagicMock()
+        fake_source.wait_until_ready = AsyncMock(return_value=False)
+
+        with (
+            patch.object(self.mixin, "_extract_info", new=AsyncMock(return_value=stream_info)),
+            patch.object(self.mixin, "_schedule_background_cache") as mock_bg,
+            patch("voice_commands_mixin.YtDlpPipeOpusAudio", return_value=fake_source),
+        ):
+            await self.mixin._play_query(ctx, "broken stream song")
+
+        fake_source.cleanup.assert_called_once()
+        vc.play.assert_not_called()
+        mock_bg.assert_not_called()
+        self.assertNotIn(10, self.mixin.current_song)
+
+    async def test_queued_stream_schedules_bg_cache_immediately(self):
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        vc.is_playing.return_value = True
+        vc.is_paused.return_value = False
+        channel = MagicMock()
+        vc.channel = channel
+        self.mixin.voice_clients[10] = vc
+        self.mixin.current_song[10] = {"title": "Already Playing", "duration": 200, "start_time": 100.0}
+
+        ctx = MagicMock()
+        ctx.guild.id = 10
+        ctx.guild.name = "Test Guild"
+        ctx.guild.voice_client = vc
+        ctx.author = MagicMock()
+        ctx.author.id = 42
+        ctx.author.voice.channel = channel
+        ctx.send = AsyncMock(return_value=MagicMock(edit=AsyncMock()))
+
+        stream_info = {
+            "title": "Queued Uncached Song",
+            "url": "https://example.com/direct-stream",
+            "webpage_url": "https://www.youtube.com/watch?v=que12345678",
+            "channel": "Artist",
+            "duration": 180,
+            "youtube_id": "que12345678",
+            "is_cached": False,
+            "was_previously_cached": False,
+            "created_cache_entry": False,
+            "exceeds_cache_duration": False,
+            "estimated_size_bytes": 1000,
+        }
+
+        with (
+            patch.object(self.mixin, "_extract_info", new=AsyncMock(return_value=stream_info)),
+            patch.object(self.mixin, "_schedule_background_cache") as mock_bg,
+        ):
+            await self.mixin._play_query(ctx, "queued uncached song")
+
+        mock_bg.assert_called_once_with(stream_info, "https://www.youtube.com/watch?v=que12345678")
+        self.assertEqual(len(self.mixin.queues[10]), 1)
+
+    async def test_play_next_async_waits_for_stream_and_skips_failed_stream(self):
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        self.mixin.voice_clients[10] = vc
+
+        bad_song = {
+            "title": "Failing Stream",
+            "url": "https://example.com/bad",
+            "webpage_url": "https://www.youtube.com/watch?v=bad12345678",
+            "youtube_id": "bad12345678",
+            "is_cached": False,
+        }
+        good_song = {
+            "title": "Good Stream",
+            "url": "https://example.com/good",
+            "webpage_url": "https://www.youtube.com/watch?v=gud12345678",
+            "youtube_id": "gud12345678",
+            "is_cached": False,
+        }
+        self.mixin.queues[10] = deque([bad_song, good_song])
+
+        bad_source = MagicMock()
+        bad_source.wait_until_ready = AsyncMock(return_value=False)
+        good_source = MagicMock()
+        good_source.wait_until_ready = AsyncMock(return_value=True)
+
+        with patch("playback_mixin.YtDlpPipeOpusAudio", side_effect=[bad_source, good_source]):
+            await self.mixin._play_next_async(10)
+
+        bad_source.cleanup.assert_called_once()
+        good_source.wait_until_ready.assert_awaited_once()
+        vc.play.assert_called_once_with(good_source, after=unittest.mock.ANY)
+        self.assertIs(self.mixin.current_song[10], good_song)
+        self.assertIsNotNone(good_song["start_time"])
+        self.assertNotIn("is_buffering", good_song)
+
+    async def test_nowplaying_does_not_clear_buffering_song(self):
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        vc.is_playing.return_value = False
+        vc.is_paused.return_value = False
+        self.mixin.voice_clients[10] = vc
+        song = {"title": "Loading Track", "is_buffering": True, "start_time": None}
+        self.mixin.current_song[10] = song
+
+        ctx = MagicMock()
+        ctx.guild.id = 10
+        ctx.guild.name = "Test Guild"
+        ctx.author = "Alice"
+        ctx.send = AsyncMock()
+
+        await QueueCommandsMixin.nowplaying.callback(self.mixin, ctx)
+
+        ctx.send.assert_awaited_once()
+        self.assertIn("Buffering", ctx.send.await_args.args[0])
+        self.assertIs(self.mixin.current_song[10], song)
+
+
+class YtDlpPipeOpusAudioPrefetchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_wait_until_ready_buffers_first_packet_for_read(self):
+        packets = iter([b"pkt1", b"pkt2", b""])
+        source = youtube.YtDlpPipeOpusAudio.__new__(youtube.YtDlpPipeOpusAudio)
+        source._buffered_packet = None
+        source._prefetched = False
+        source._ytdlp_proc = None
+        source.cleanup = MagicMock()
+
+        with patch.object(youtube.discord.FFmpegOpusAudio, "read", side_effect=lambda: next(packets)):
+            ready = await source.wait_until_ready(timeout=2.0)
+            self.assertTrue(ready)
+            self.assertEqual(source.read(), b"pkt1")
+            self.assertEqual(source.read(), b"pkt2")
+            self.assertEqual(source.read(), b"")
+
+        source.cleanup.assert_not_called()
+
+    async def test_wait_until_ready_returns_false_on_empty_stream(self):
+        source = youtube.YtDlpPipeOpusAudio.__new__(youtube.YtDlpPipeOpusAudio)
+        source._buffered_packet = None
+        source._prefetched = False
+        source._ytdlp_proc = None
+        source.cleanup = MagicMock()
+
+        with patch.object(youtube.discord.FFmpegOpusAudio, "read", return_value=b""):
+            ready = await source.wait_until_ready(timeout=2.0)
+            self.assertFalse(ready)
 
 
 class LowPriorityNormalizationTests(unittest.TestCase):

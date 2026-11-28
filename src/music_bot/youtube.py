@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import re
@@ -135,6 +136,8 @@ class YtDlpPipeOpusAudio(discord.FFmpegOpusAudio):
         executable: str = FFMPEG_EXECUTABLE,
         options: str | None = None,
     ) -> None:
+        self._buffered_packet: bytes | None = None
+        self._prefetched: bool = False
         cmd = build_yt_dlp_stream_command(webpage_url)
         self._ytdlp_proc: subprocess.Popen | None = subprocess.Popen(
             cmd,
@@ -151,6 +154,50 @@ class YtDlpPipeOpusAudio(discord.FFmpegOpusAudio):
         except Exception:
             self._terminate_ytdlp()
             raise
+
+    def prefetch_first_packet(self) -> bool:
+        """Block until the first Opus packet is available and buffer it for read()."""
+        if self._prefetched:
+            return self._buffered_packet is not None
+        packet = super().read()
+        self._prefetched = True
+        if packet:
+            self._buffered_packet = packet
+            return True
+        return False
+
+    async def wait_until_ready(
+        self,
+        *,
+        timeout: float | None = 30.0,
+        executor=None,
+    ) -> bool:
+        """Asynchronously wait for yt-dlp + ffmpeg to emit the first Opus packet.
+
+        Prevents discord.py's AudioPlayer from starting its wall-clock timer
+        before audio bytes are flowing (which otherwise causes AudioPlayer to
+        fast-forward and drop the opening seconds of the track).
+        """
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(executor, self.prefetch_first_packet)
+        try:
+            if timeout is None:
+                return await future
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning("Timed out waiting for yt-dlp stream to produce initial audio packet.")
+            self.cleanup()
+            return False
+        except asyncio.CancelledError:
+            self.cleanup()
+            raise
+
+    def read(self) -> bytes:
+        if self._buffered_packet is not None:
+            packet = self._buffered_packet
+            self._buffered_packet = None
+            return packet
+        return super().read()
 
     def _terminate_ytdlp(self) -> None:
         proc = getattr(self, "_ytdlp_proc", None)

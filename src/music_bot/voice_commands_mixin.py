@@ -250,18 +250,13 @@ class VoiceCommandsMixin:
                 song_info['cache_query_only_if_missing'] = True
 
         should_download = self._should_download_to_cache(song_info)
+        download_query = song_info.get('webpage_url') or query_stripped
         if song_info.get('exceeds_cache_duration', False) and not song_info.get('is_cached', False):
             logger.info(
                 f"Streaming '{query_stripped}' instead of caching because its duration "
                 f"({song_info.get('duration')}s) exceeds the cache download limit "
                 f"({MAX_SONG_DURATION_SECONDS}s)."
             )
-
-        if should_download:
-            download_query = song_info.get('webpage_url') or query_stripped
-            schedule_bg = getattr(self, '_schedule_background_cache', None)
-            if schedule_bg:
-                schedule_bg(song_info, download_query)
 
         try:
             request_id = self.db_manager.log_song_request(
@@ -281,6 +276,10 @@ class VoiceCommandsMixin:
 
         is_active = vc.is_playing() or vc.is_paused() or (guild_id in self.current_song and self.current_song[guild_id] is not None)
         if is_active:
+             if should_download:
+                 schedule_bg = getattr(self, '_schedule_background_cache', None)
+                 if schedule_bg:
+                     schedule_bg(song_info, download_query)
              songs_ahead = list(queue)
              current_song = self.current_song.get(guild_id)
              estimated_wait = (
@@ -309,13 +308,11 @@ class VoiceCommandsMixin:
                  embed.add_field(name="Source", value="🌐 Stream", inline=True)
              await ctx.send(embed=embed)
         else:
-            song_info['start_time'] = time.time()
+            song_info['start_time'] = None
+            song_info['is_buffering'] = True
             self.current_song[guild_id] = song_info
-            if 'request_id' in song_info:
-                self.db_manager.update_play_start_timestamp(song_info['request_id'])
-                self.db_manager.update_play_status(song_info['request_id'], 'playing')
-            logger.info(f"Playing immediately in guild {guild_id}: {song_info['title']}")
             logger.debug(f"Attempting to play URL: {song_info['url']}")
+            source = None
             try:
                 if song_info.get('is_cached', False):
                     source = await discord.FFmpegOpusAudio.from_probe(
@@ -327,6 +324,15 @@ class VoiceCommandsMixin:
                         executable=FFMPEG_EXECUTABLE,
                         options=FFMPEG_OPTIONS['options'],
                     )
+                    if hasattr(source, 'wait_until_ready'):
+                        ready = await source.wait_until_ready()
+                        if not ready:
+                            if hasattr(source, 'cleanup'):
+                                source.cleanup()
+                            self.current_song.pop(guild_id, None)
+                            await ctx.send(f"Could not start streaming audio for `{song_info['title']}`.")
+                            logger.error(f"Stream failed to produce initial audio packet in guild {guild_id}: {song_info['title']}")
+                            return
                 elif LOUDNORM_ENABLED:
                     source = discord.FFmpegOpusAudio(
                         song_info['url'], **FFMPEG_OPTIONS
@@ -335,7 +341,25 @@ class VoiceCommandsMixin:
                     source = await discord.FFmpegOpusAudio.from_probe(
                         song_info['url'], **FFMPEG_OPTIONS
                     )
+
+                if getattr(self, 'is_shutting_down', False) or not vc.is_connected():
+                    if source is not None and hasattr(source, 'cleanup'):
+                        source.cleanup()
+                    self.current_song.pop(guild_id, None)
+                    return
+
+                song_info['start_time'] = time.time()
+                song_info.pop('is_buffering', None)
+                if 'request_id' in song_info:
+                    self.db_manager.update_play_start_timestamp(song_info['request_id'])
+                    self.db_manager.update_play_status(song_info['request_id'], 'playing')
+                logger.info(f"Playing immediately in guild {guild_id}: {song_info['title']}")
                 vc.play(source, after=lambda e: self._play_next(guild_id, error=e))
+
+                if should_download:
+                    schedule_bg = getattr(self, '_schedule_background_cache', None)
+                    if schedule_bg:
+                        schedule_bg(song_info, download_query)
 
                 embed = discord.Embed(title="Now Playing", description=f"[{song_info['title']}]({song_info['webpage_url']})", color=discord.Color.green())
                 if song_info.get('thumbnail'):
@@ -353,10 +377,14 @@ class VoiceCommandsMixin:
                 await ctx.send(embed=embed)
 
             except discord.ClientException as e:
+                if source is not None and hasattr(source, 'cleanup'):
+                    source.cleanup()
                 await ctx.send(f"Error starting playback: {e}")
                 logger.error(f"ClientException during initial play in {guild_id}: {e}")
                 self.current_song.pop(guild_id, None)
             except Exception as e:
+                if source is not None and hasattr(source, 'cleanup'):
+                    source.cleanup()
                 await ctx.send("An unexpected error occurred while trying to play.")
                 logger.exception(f"Unexpected error during initial play in {guild_id}: {e}")
                 self.current_song.pop(guild_id, None)

@@ -60,6 +60,10 @@ class QueueCommandsMixin:
             return
 
         if not vc.is_playing() and not vc.is_paused():
+             if current.get('is_buffering'):
+                 title = current.get('title', 'Unknown Title')
+                 await ctx.send(f"Buffering **{title}** — playback will start in a moment.")
+                 return
              await ctx.send("I am not playing anything right now (playback state inactive).")
              # Clear potentially stale current song info if state mismatch
              if guild_id in self.current_song:

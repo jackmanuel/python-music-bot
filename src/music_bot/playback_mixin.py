@@ -816,13 +816,10 @@ class PlaybackMixin:
 
         next_song_info = queue.popleft()
         self._upgrade_queued_song_to_cache(next_song_info)
-        next_song_info['start_time'] = time.time()
+        next_song_info['start_time'] = None
+        next_song_info['is_buffering'] = True
         self.current_song[guild_id] = next_song_info
         self._process_pending_cache_evictions()
-        if 'request_id' in next_song_info:
-            self.db_manager.update_play_start_timestamp(next_song_info['request_id'])
-            self.db_manager.update_play_status(next_song_info['request_id'], 'playing')
-        logger.info(f"Playing next song in guild {guild_id}: {next_song_info['title']}")
         logger.debug(f"Attempting to play next URL: {next_song_info['url']}")
 
         if guild_id not in self.voice_clients or not self.voice_clients[guild_id].is_connected():
@@ -832,6 +829,7 @@ class PlaybackMixin:
             return
 
         vc = self.voice_clients[guild_id]
+        source = None
         try:
             if next_song_info.get('is_cached', False):
                 source = await discord.FFmpegOpusAudio.from_probe(
@@ -843,6 +841,18 @@ class PlaybackMixin:
                     executable=FFMPEG_EXECUTABLE,
                     options=FFMPEG_OPTIONS['options'],
                 )
+                if hasattr(source, 'wait_until_ready'):
+                    ready = await source.wait_until_ready()
+                    if not ready:
+                        if hasattr(source, 'cleanup'):
+                            source.cleanup()
+                        logger.error(
+                            f"Stream failed to produce initial audio packet in guild {guild_id}: {next_song_info['title']}"
+                        )
+                        self.current_song.pop(guild_id, None)
+                        self._process_pending_cache_evictions()
+                        await self._play_next_async(guild_id)
+                        return
             elif LOUDNORM_ENABLED:
                 source = discord.FFmpegOpusAudio(
                     next_song_info['url'], **FFMPEG_OPTIONS
@@ -851,14 +861,32 @@ class PlaybackMixin:
                 source = await discord.FFmpegOpusAudio.from_probe(
                     next_song_info['url'], **FFMPEG_OPTIONS
                 )
+
+            if getattr(self, 'is_shutting_down', False) or not vc.is_connected():
+                if source is not None and hasattr(source, 'cleanup'):
+                    source.cleanup()
+                self.current_song.pop(guild_id, None)
+                self._process_pending_cache_evictions()
+                return
+
+            next_song_info['start_time'] = time.time()
+            next_song_info.pop('is_buffering', None)
+            if 'request_id' in next_song_info:
+                self.db_manager.update_play_start_timestamp(next_song_info['request_id'])
+                self.db_manager.update_play_status(next_song_info['request_id'], 'playing')
+            logger.info(f"Playing next song in guild {guild_id}: {next_song_info['title']}")
             vc.play(source, after=lambda e: self._play_next(guild_id, error=e))
             self.last_activity[guild_id] = time.time()
         except discord.ClientException as e:
+             if source is not None and hasattr(source, 'cleanup'):
+                 source.cleanup()
              logger.error(f"Discord ClientException while trying to play next in {guild_id}: {e}")
              self.current_song.pop(guild_id, None)
              self._process_pending_cache_evictions()
              await self._play_next_async(guild_id)
         except Exception as e:
+            if source is not None and hasattr(source, 'cleanup'):
+                source.cleanup()
             logger.exception(f"Unexpected error during playback setup in {guild_id}: {e}")
             self.current_song.pop(guild_id, None)
             self._process_pending_cache_evictions()
