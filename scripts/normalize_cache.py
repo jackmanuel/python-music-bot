@@ -149,7 +149,7 @@ def normalize_one(
 
         required_ranges = {
             "input_i": (-99.0, 0.0),
-            "input_tp": (-99.0, 0.0),
+            "input_tp": (-99.0, 99.0),
             "input_lra": (0.0, 99.0),
             "input_thresh": (-99.0, 0.0),
             "target_offset": (-99.0, 99.0),

@@ -35,6 +35,16 @@ class AudioNormalizationUnitTests(unittest.TestCase):
         self.assertEqual(stats["input_i"], "-12.34")
         self.assertEqual(classify_loudnorm_stats(stats), "linear")
 
+    def test_classify_positive_true_peak_uses_linear(self):
+        stats = {
+            "input_i": "-8.40",
+            "input_tp": "0.43",
+            "input_lra": "5.30",
+            "input_thresh": "-18.64",
+            "target_offset": "-0.63",
+        }
+        self.assertEqual(classify_loudnorm_stats(stats), "linear")
+
     def test_classify_out_of_range_loudness_falls_back_to_single_pass(self):
         stats = {
             "input_i": "0.25",
